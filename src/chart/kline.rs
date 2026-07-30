@@ -36,10 +36,25 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::{cell::RefCell, sync::Arc, time::Instant};
 
 /// Maximum number of raw trades to retain in memory.
-/// Older trades are pruned FIFO when this cap is exceeded.
+/// Older trades are pruned by exchange timestamp when this cap is exceeded.
 /// 50k trades ≈ 1.5-3 MB depending on Trade size.
 const MAX_RAW_TRADES: usize = 50_000;
 const MAX_LIVE_TRADE_BUCKETS: usize = 4_096;
+
+fn retain_latest_raw_trades(raw_trades: &mut Vec<Trade>, previous_len: usize) -> usize {
+    if previous_len > 0
+        && previous_len < raw_trades.len()
+        && raw_trades[previous_len - 1].time > raw_trades[previous_len].time
+    {
+        raw_trades.sort_by_key(|trade| trade.time);
+    }
+
+    let excess = raw_trades.len().saturating_sub(MAX_RAW_TRADES);
+    if excess > 0 {
+        raw_trades.drain(..excess);
+    }
+    excess
+}
 
 fn deduplicate_incoming_trades(
     existing: &[Trade],
@@ -258,6 +273,9 @@ pub struct KlineChart {
     chart: ViewState,
     data_source: PlotData<KlineDataPoint>,
     raw_trades: Vec<Trade>,
+    /// True once raw retention has discarded executions. Covered fetch ranges
+    /// may then extend further back than the raw data still held in memory.
+    raw_trades_pruned: bool,
     /// Time buckets populated from the live raw feed. Historical aggTrades use a different ID
     /// namespace and must never be added to these same buckets.
     live_trade_buckets: FxHashSet<UnixMs>,
@@ -395,6 +413,7 @@ impl KlineChart {
                     visual_config,
                     data_source,
                     raw_trades,
+                    raw_trades_pruned: false,
                     live_trade_buckets: FxHashSet::default(),
                     covered_trade_ranges: Vec::new(),
                     covered_bubble_summary_ranges: Vec::new(),
@@ -471,6 +490,7 @@ impl KlineChart {
                     visual_config,
                     data_source,
                     raw_trades,
+                    raw_trades_pruned: false,
                     live_trade_buckets: FxHashSet::default(),
                     covered_trade_ranges: Vec::new(),
                     covered_bubble_summary_ranges: Vec::new(),
@@ -839,7 +859,7 @@ impl KlineChart {
                             .max(config.max_bubbles_per_bar);
 
                         if config.use_raw_trades_when_available
-                            && self.is_trade_range_covered(fetch_from, fetch_to)
+                            && self.is_raw_trade_range_available(fetch_from, fetch_to)
                         {
                             let summaries = self.bubble_summaries_from_raw_trades(
                                 fetch_from,
@@ -1009,6 +1029,7 @@ impl KlineChart {
         self.request_handler = RequestHandler::default();
         log::warn!("CHART Reset | reason=cache_invalidated request_history=discarded");
         self.raw_trades.clear();
+        self.raw_trades_pruned = false;
 
         match &mut self.data_source {
             PlotData::TimeBased(timeseries) => {
@@ -1144,6 +1165,15 @@ impl KlineChart {
         self.covered_trade_ranges
             .iter()
             .any(|(covered_from, covered_to)| from >= *covered_from && to <= *covered_to)
+    }
+
+    fn is_raw_trade_range_available(&self, from: UnixMs, to: UnixMs) -> bool {
+        self.is_trade_range_covered(from, to)
+            && (!self.raw_trades_pruned
+                || self
+                    .raw_trades
+                    .first()
+                    .is_some_and(|earliest| earliest.time <= from))
     }
 
     pub fn subtract_covered_trade_ranges(
@@ -1637,7 +1667,7 @@ impl KlineChart {
                 tick_aggr.change_tick_size(new_step, &self.raw_trades);
             }
             PlotData::TimeBased(ref mut timeseries) => {
-                timeseries.change_tick_size(new_step, &self.raw_trades);
+                timeseries.change_tick_size(new_step);
             }
         }
 
@@ -1659,6 +1689,7 @@ impl KlineChart {
             Basis::Time(interval) => {
                 if matches!(previous_basis, Basis::Tick(_)) {
                     self.raw_trades.clear();
+                    self.raw_trades_pruned = false;
                 };
 
                 let step = self.chart.tick_size;
@@ -1670,6 +1701,7 @@ impl KlineChart {
                     &self.raw_trades
                 } else {
                     self.raw_trades.clear();
+                    self.raw_trades_pruned = false;
                     &vec![]
                 };
 
@@ -1735,10 +1767,12 @@ impl KlineChart {
         let raw_before = self.raw_trades.len();
         self.raw_trades.extend_from_slice(&buffer);
 
-        // Prune oldest trades if we exceed the retention cap.
-        if self.raw_trades.len() > MAX_RAW_TRADES {
-            let excess = self.raw_trades.len() - MAX_RAW_TRADES;
-            self.raw_trades.drain(..excess);
+        // Historical backfills can arrive after newer live data. Retain by
+        // exchange timestamp rather than insertion order so the newest raw
+        // window remains available to overlays.
+        let excess = retain_latest_raw_trades(&mut self.raw_trades, raw_before);
+        if excess > 0 {
+            self.raw_trades_pruned = true;
             log::debug!(
                 "DATA Trades Prune | reason=cap exceeded={} removed={excess} retained={}",
                 self.raw_trades.len() + excess,
@@ -1835,10 +1869,11 @@ impl KlineChart {
 
         self.raw_trades.extend_from_slice(&raw_trades);
 
-        // Prune oldest trades if we exceed the retention cap.
-        if self.raw_trades.len() > MAX_RAW_TRADES {
-            let excess = self.raw_trades.len() - MAX_RAW_TRADES;
-            self.raw_trades.drain(..excess);
+        // Backfills are requested newest-first, so an older batch may be
+        // appended after newer executions already in memory.
+        let excess = retain_latest_raw_trades(&mut self.raw_trades, raw_before);
+        if excess > 0 {
+            self.raw_trades_pruned = true;
             log::debug!(
                 "DATA Trades Prune | reason=cap exceeded={} removed={excess} retained={}",
                 self.raw_trades.len() + excess,
@@ -4489,7 +4524,10 @@ fn build_rendered_volume_bubbles(
                 .datapoints
                 .range(UnixMs::new(earliest.min(baseline_from))..=UnixMs::new(latest))
             {
-                if config.use_raw_trades_when_available && !dp.trade_sequence.is_empty() {
+                if config.use_raw_trades_when_available
+                    && dp.trade_coverage == data::chart::kline::TradeCoverage::Complete
+                    && !dp.trade_sequence.is_empty()
+                {
                     clusters.extend(cluster_volume_bubble_trades(
                         &dp.trade_sequence,
                         candle_time,
@@ -6484,6 +6522,28 @@ mod tests {
         assert_eq!(discarded, 1);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, historical_only.id);
+    }
+
+    #[test]
+    fn older_backfill_cannot_evict_the_latest_raw_trades() {
+        let mut retained = (0..MAX_RAW_TRADES)
+            .map(|index| test_trade(index as u64, 100_000 + index as u64, 1.0))
+            .collect::<Vec<_>>();
+        let previous_len = retained.len();
+        retained.push(test_trade(999_999, 1_000, 1.0));
+
+        let removed = retain_latest_raw_trades(&mut retained, previous_len);
+
+        assert_eq!(removed, 1);
+        assert_eq!(retained.len(), MAX_RAW_TRADES);
+        assert_eq!(
+            retained.first().map(|trade| trade.time),
+            Some(UnixMs::new(100_000))
+        );
+        assert_eq!(
+            retained.last().map(|trade| trade.time),
+            Some(UnixMs::new(100_000 + MAX_RAW_TRADES as u64 - 1))
+        );
     }
 
     #[test]
