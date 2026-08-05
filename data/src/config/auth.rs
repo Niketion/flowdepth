@@ -122,6 +122,41 @@ pub fn delete_proxy_auth(proxy: &Proxy) {
 // ── Server auth (keychain) ──────────────────────────────────────────────
 
 const SERVER_KEYCHAIN_SERVICE: &str = "flowsurface.server";
+const RITHMIC_KEYCHAIN_SERVICE: &str = "flowsurface.rithmic";
+
+fn rithmic_entry_for(url: &str) -> Result<keyring::Entry, keyring::Error> {
+    keyring::Entry::new(RITHMIC_KEYCHAIN_SERVICE, url)
+}
+
+pub fn load_rithmic_credentials(url: &str) -> Option<(String, String)> {
+    let entry = rithmic_entry_for(url).ok()?;
+    let stored = entry.get_password().ok()?;
+    let (user, password) = stored.split_once('\n')?;
+    if user.is_empty() || password.is_empty() {
+        return None;
+    }
+    Some((user.to_string(), password.to_string()))
+}
+
+pub fn save_rithmic_credentials(url: &str, user: &str, password: &str) {
+    if user.is_empty() || password.is_empty() || user.contains('\n') || password.contains('\n') {
+        log::warn!("Refusing invalid Rithmic credentials for keychain storage");
+        return;
+    }
+    match rithmic_entry_for(url)
+        .and_then(|entry| entry.set_password(&format!("{user}\n{password}")))
+    {
+        Ok(()) => log::info!("Stored Rithmic credentials in keychain"),
+        Err(error) => log::warn!("Failed to store Rithmic credentials in keychain: {error}"),
+    }
+}
+
+pub fn delete_rithmic_credentials(url: &str) {
+    match rithmic_entry_for(url).and_then(|entry| entry.delete_credential()) {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(error) => log::warn!("Failed to delete Rithmic credentials from keychain: {error}"),
+    }
+}
 
 fn server_entry_for(url: &str) -> Result<keyring::Entry, keyring::Error> {
     keyring::Entry::new(SERVER_KEYCHAIN_SERVICE, url)

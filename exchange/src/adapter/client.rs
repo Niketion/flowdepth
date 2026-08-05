@@ -1,6 +1,6 @@
 use super::{
     AdapterError, Event, Exchange, MarketKind, StreamConfig, StreamKind, StreamTicksize, Venue,
-    hub::{binance, bybit, hyperliquid, mexc, okex},
+    hub::{binance, bybit, hyperliquid, mexc, okex, rithmic},
 };
 use crate::{
     Kline, OpenInterest, TickMultiplier, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs,
@@ -21,6 +21,7 @@ pub struct AdapterHandles {
     hyperliquid: Option<hyperliquid::HyperliquidHandle>,
     okex: Option<okex::OkexHandle>,
     mexc: Option<mexc::MexcHandle>,
+    rithmic: Option<rithmic::RithmicHandle>,
 }
 
 impl AdapterHandles {
@@ -47,6 +48,7 @@ impl AdapterHandles {
             Venue::Mexc => {
                 self.mexc = Some(mexc::MexcHandle::new(client.clone(), proxy)?);
             }
+            Venue::Rithmic => {}
         }
 
         Ok(())
@@ -63,6 +65,7 @@ impl AdapterHandles {
             hyperliquid: None,
             okex: None,
             mexc: None,
+            rithmic: None,
         };
 
         for venue in venues {
@@ -72,6 +75,17 @@ impl AdapterHandles {
         }
 
         out
+    }
+
+    pub fn with_rithmic(mut self, config: Option<super::RithmicConfig>) -> Self {
+        self.rithmic = config.and_then(|config| match rithmic::RithmicHandle::new(config) {
+            Ok(handle) => Some(handle),
+            Err(error) => {
+                log::error!("Failed to configure Rithmic adapter: {error}");
+                None
+            }
+        });
+        self
     }
 
     fn missing_venue_stream(
@@ -174,6 +188,12 @@ impl AdapterHandles {
                 .map_or_else(missing_venue_stream, |handle| {
                     handle.connect_kline_stream(streams, market_kind).boxed()
                 }),
+            Venue::Rithmic => self
+                .rithmic
+                .as_ref()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.clone().connect_kline_stream(streams).boxed()
+                }),
         }
     }
 
@@ -218,6 +238,12 @@ impl AdapterHandles {
                 .clone()
                 .map_or_else(missing_venue_stream, |handle| {
                     handle.connect_trade_stream(streams, market_kind).boxed()
+                }),
+            Venue::Rithmic => self
+                .rithmic
+                .as_ref()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle.clone().connect_trade_stream(streams).boxed()
                 }),
         }
     }
@@ -274,6 +300,15 @@ impl AdapterHandles {
                 .clone()
                 .map_or_else(missing_venue_stream, |handle| {
                     handle
+                        .connect_depth_stream(ticker_info, depth_aggr, push_freq)
+                        .boxed()
+                }),
+            Venue::Rithmic => self
+                .rithmic
+                .as_ref()
+                .map_or_else(missing_venue_stream, |handle| {
+                    handle
+                        .clone()
                         .connect_depth_stream(ticker_info, depth_aggr, push_freq)
                         .boxed()
                 }),
@@ -342,6 +377,25 @@ impl AdapterHandles {
                     .fetch_ticker_metadata(mexc::MexcMarketScope::metadata(markets))
                     .await
             }
+            Venue::Rithmic => Ok(HashMap::default()),
+        }
+    }
+
+    pub async fn search_ticker_metadata(
+        &self,
+        venue: Venue,
+        query: &str,
+    ) -> Result<Vec<TickerInfo>, AdapterError> {
+        match venue {
+            Venue::Rithmic => {
+                let Some(handle) = self.rithmic.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle.search_futures(query).await
+            }
+            _ => Err(AdapterError::InvalidRequest(format!(
+                "Remote symbol search is not available for {venue}"
+            ))),
         }
     }
 
@@ -410,6 +464,7 @@ impl AdapterHandles {
                     .fetch_ticker_stats(mexc::MexcMarketScope::stats(markets, contract_sizes))
                     .await
             }
+            Venue::Rithmic => Ok(HashMap::default()),
         }
     }
 
@@ -448,6 +503,12 @@ impl AdapterHandles {
             }
             Venue::Mexc => {
                 let Some(handle) = self.mexc.as_ref() else {
+                    return Err(Self::missing_venue_error(venue));
+                };
+                handle.fetch_klines(ticker_info, timeframe, range).await
+            }
+            Venue::Rithmic => {
+                let Some(handle) = self.rithmic.as_ref() else {
                     return Err(Self::missing_venue_error(venue));
                 };
                 handle.fetch_klines(ticker_info, timeframe, range).await
@@ -508,6 +569,12 @@ impl AdapterHandles {
                     return Err(Self::missing_venue_error(exchange.venue()));
                 };
                 handle.fetch_trades(ticker_info, from_time, data_path).await
+            }
+            Venue::Rithmic => {
+                let Some(handle) = self.rithmic.as_ref() else {
+                    return Err(Self::missing_venue_error(exchange.venue()));
+                };
+                handle.fetch_trades(ticker_info, from_time).await
             }
             _ => Err(AdapterError::InvalidRequest(format!(
                 "Trade fetch not available for {exchange}"

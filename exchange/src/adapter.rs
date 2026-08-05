@@ -28,20 +28,28 @@ pub enum MarketKind {
     Spot,
     LinearPerps,
     InversePerps,
+    Futures,
 }
 
 impl MarketKind {
-    pub const ALL: [MarketKind; 3] = [
+    pub const CRYPTO: [MarketKind; 3] = [
         MarketKind::Spot,
         MarketKind::LinearPerps,
         MarketKind::InversePerps,
+    ];
+
+    pub const ALL: [MarketKind; 4] = [
+        MarketKind::Spot,
+        MarketKind::LinearPerps,
+        MarketKind::InversePerps,
+        MarketKind::Futures,
     ];
 
     pub fn qty_in_quote_value(&self, qty: Qty, price: Price, size_in_quote_ccy: bool) -> f64 {
         let qty = qty.to_f64();
 
         match self {
-            MarketKind::InversePerps => qty,
+            MarketKind::InversePerps | MarketKind::Futures => qty,
             _ => {
                 if size_in_quote_ccy {
                     qty
@@ -62,6 +70,7 @@ impl std::fmt::Display for MarketKind {
                 MarketKind::Spot => "Spot",
                 MarketKind::LinearPerps => "Linear",
                 MarketKind::InversePerps => "Inverse",
+                MarketKind::Futures => "Futures",
             }
         )
     }
@@ -77,6 +86,8 @@ impl FromStr for MarketKind {
             Ok(Self::LinearPerps)
         } else if s.eq_ignore_ascii_case("inverse") {
             Ok(Self::InversePerps)
+        } else if s.eq_ignore_ascii_case("futures") {
+            Ok(Self::Futures)
         } else {
             Err(format!("Invalid market kind: {}", s))
         }
@@ -258,10 +269,20 @@ pub enum Venue {
     Hyperliquid,
     Okex,
     Mexc,
+    Rithmic,
 }
 
 impl Venue {
-    pub const ALL: [Venue; 5] = [
+    pub const ALL: [Venue; 6] = [
+        Venue::Bybit,
+        Venue::Binance,
+        Venue::Hyperliquid,
+        Venue::Okex,
+        Venue::Mexc,
+        Venue::Rithmic,
+    ];
+
+    pub const PUBLIC: [Venue; 5] = [
         Venue::Bybit,
         Venue::Binance,
         Venue::Hyperliquid,
@@ -281,6 +302,7 @@ impl std::fmt::Display for Venue {
                 Venue::Hyperliquid => "Hyperliquid",
                 Venue::Okex => "OKX",
                 Venue::Mexc => "MEXC",
+                Venue::Rithmic => "Rithmic",
             }
         )
     }
@@ -300,9 +322,45 @@ impl FromStr for Venue {
             Ok(Self::Okex)
         } else if s.eq_ignore_ascii_case("mexc") {
             Ok(Self::Mexc)
+        } else if s.eq_ignore_ascii_case("rithmic") {
+            Ok(Self::Rithmic)
         } else {
             Err(format!("Invalid venue: {}", s))
         }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct RithmicConfig {
+    pub url: String,
+    pub system_name: String,
+    pub app_name: String,
+    pub app_version: String,
+    pub user: String,
+    pub password: String,
+}
+
+impl std::fmt::Debug for RithmicConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RithmicConfig")
+            .field("url", &self.url)
+            .field("system_name", &self.system_name)
+            .field("app_name", &self.app_name)
+            .field("app_version", &self.app_version)
+            .field("user", &"[REDACTED]")
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl RithmicConfig {
+    pub fn is_complete(&self) -> bool {
+        self.url.starts_with("wss://")
+            && !self.system_name.trim().is_empty()
+            && !self.app_name.trim().is_empty()
+            && !self.app_version.trim().is_empty()
+            && !self.user.trim().is_empty()
+            && !self.password.is_empty()
     }
 }
 
@@ -324,6 +382,7 @@ pub enum Exchange {
     MexcLinear,
     MexcInverse,
     MexcSpot,
+    RithmicFutures,
 }
 
 impl std::fmt::Display for Exchange {
@@ -357,7 +416,7 @@ impl FromStr for Exchange {
 }
 
 impl Exchange {
-    pub const ALL: [Exchange; 14] = [
+    pub const ALL: [Exchange; 15] = [
         Exchange::BinanceLinear,
         Exchange::BinanceInverse,
         Exchange::BinanceSpot,
@@ -372,6 +431,7 @@ impl Exchange {
         Exchange::MexcLinear,
         Exchange::MexcInverse,
         Exchange::MexcSpot,
+        Exchange::RithmicFutures,
     ];
 
     pub fn from_venue_and_market(venue: Venue, market: MarketKind) -> Option<Self> {
@@ -396,6 +456,7 @@ impl Exchange {
             | Exchange::HyperliquidSpot
             | Exchange::OkexSpot
             | Exchange::MexcSpot => MarketKind::Spot,
+            Exchange::RithmicFutures => MarketKind::Futures,
         }
     }
 
@@ -408,6 +469,7 @@ impl Exchange {
             Exchange::HyperliquidLinear | Exchange::HyperliquidSpot => Venue::Hyperliquid,
             Exchange::OkexLinear | Exchange::OkexInverse | Exchange::OkexSpot => Venue::Okex,
             Exchange::MexcLinear | Exchange::MexcInverse | Exchange::MexcSpot => Venue::Mexc,
+            Exchange::RithmicFutures => Venue::Rithmic,
         }
     }
 
@@ -450,6 +512,7 @@ impl Exchange {
                 Timeframe::KLINE.contains(&tf)
                     && !matches!(tf, Timeframe::M3 | Timeframe::H2 | Timeframe::H12)
             }
+            Venue::Rithmic => Timeframe::KLINE.contains(&tf),
         }
     }
 
@@ -466,6 +529,32 @@ impl Exchange {
                 | Exchange::MexcLinear
                 | Exchange::MexcInverse
         )
+    }
+
+    pub fn supports_historical_trades(&self) -> bool {
+        matches!(
+            self,
+            Exchange::BinanceSpot
+                | Exchange::BinanceLinear
+                | Exchange::BinanceInverse
+                | Exchange::RithmicFutures
+        )
+    }
+
+    pub fn supports_open_interest(&self) -> bool {
+        matches!(
+            self,
+            Exchange::BinanceLinear
+                | Exchange::BinanceInverse
+                | Exchange::BybitLinear
+                | Exchange::BybitInverse
+                | Exchange::OkexLinear
+                | Exchange::OkexInverse
+        )
+    }
+
+    pub fn requires_credentials(&self) -> bool {
+        matches!(self, Exchange::RithmicFutures)
     }
 
     pub fn stream_ticksize(
@@ -505,9 +594,10 @@ impl Exchange {
     }
 
     pub fn is_symbol_supported(&self, symbol: &str, log: bool) -> bool {
-        let valid_symbol = symbol
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
+        let valid_symbol = symbol.is_ascii()
+            && symbol
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
 
         if valid_symbol {
             return true;

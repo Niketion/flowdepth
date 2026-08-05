@@ -154,6 +154,7 @@ pub enum Event {
         pane_id: uuid::Uuid,
         streams: Vec<PersistStreamKind>,
     },
+    SearchRithmic(String),
     RequestPalette,
 }
 
@@ -806,6 +807,9 @@ impl Dashboard {
                             }
                             pane::Effect::SwitchTickersInGroup(ticker_info) => {
                                 self.switch_tickers_in_group(handles, main_window.id, ticker_info)
+                            }
+                            pane::Effect::SearchRithmic(query) => {
+                                return (Task::none(), Some(Event::SearchRithmic(query)));
                             }
                             pane::Effect::FocusWidget(id) => {
                                 return (iced::widget::operation::focus(id), None);
@@ -2643,7 +2647,7 @@ impl Dashboard {
             ) {
                 status.unresolved_streams += 1;
             }
-            if !streams_blocked && !pane_state.content.initialized() {
+            if !streams_blocked && pane_state.has_stream() && !pane_state.content.initialized() {
                 status.initializing_panes += 1;
             }
             if !streams_blocked && matches!(pane_state.status, pane::Status::Loading { .. }) {

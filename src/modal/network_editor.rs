@@ -17,6 +17,7 @@ pub enum Action {
         url: Option<String>,
         auth_token: Option<String>,
     },
+    ApplyRithmicConfig(data::config::network::RithmicSettings),
     Exit,
 }
 
@@ -31,6 +32,7 @@ enum ConfirmState {
 pub enum Message {
     Proxy(ProxyMsg),
     Fetch(FetchMsg),
+    Rithmic(RithmicMsg),
     GoBack,
 }
 
@@ -38,6 +40,7 @@ pub enum Message {
 pub struct NetworkEditor {
     proxy: ProxyForm,
     fetch: FetchForm,
+    rithmic: RithmicForm,
     confirm: ConfirmState,
     error: Option<String>,
     /// Snapshot of the effective config when the editor was opened or last
@@ -61,6 +64,7 @@ impl NetworkEditor {
                 network.server_url.as_deref(),
                 network.server_auth_token.as_deref(),
             ),
+            rithmic: RithmicForm::new(&network.rithmic),
             confirm: ConfirmState::Idle,
             error: None,
             effective: network.clone(),
@@ -113,6 +117,16 @@ impl NetworkEditor {
                 }
                 action
             }
+            Message::Rithmic(msg) => {
+                let action = self.rithmic.update(msg, &mut self.error);
+                if let Some(Action::ApplyRithmicConfig(settings)) = &action {
+                    self.pending_apply = Some(data::Network {
+                        rithmic: settings.clone(),
+                        ..self.effective.clone()
+                    });
+                }
+                action
+            }
         }
     }
 
@@ -140,8 +154,15 @@ impl NetworkEditor {
                 network.server_auth_token.as_deref(),
             )
             .map(Message::Fetch);
+        let rithmic_settings = self.rithmic.view(&network.rithmic).map(Message::Rithmic);
 
-        let mut content = column![modal_header, fetch_settings, proxy_settings].spacing(12);
+        let mut content = column![
+            modal_header,
+            fetch_settings,
+            rithmic_settings,
+            proxy_settings
+        ]
+        .spacing(12);
 
         if self.pending_apply.is_some() {
             let banner = container(
@@ -184,6 +205,113 @@ impl NetworkEditor {
             .max_width(320)
             .padding(24)
             .style(style::dashboard_modal)
+            .into()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RithmicForm {
+    enabled: bool,
+    url: String,
+    system_name: String,
+    app_name: String,
+    app_version: String,
+    user: String,
+    password: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum RithmicMsg {
+    Enabled(bool),
+    Url(String),
+    SystemName(String),
+    AppName(String),
+    AppVersion(String),
+    User(String),
+    Password(String),
+    Apply,
+}
+
+impl RithmicForm {
+    fn new(settings: &data::config::network::RithmicSettings) -> Self {
+        Self {
+            enabled: settings.enabled,
+            url: settings.url.clone(),
+            system_name: settings.system_name.clone(),
+            app_name: settings.app_name.clone(),
+            app_version: settings.app_version.clone(),
+            user: settings.user.clone().unwrap_or_default(),
+            password: settings.password.clone().unwrap_or_default(),
+        }
+    }
+
+    fn update(&mut self, message: RithmicMsg, error: &mut Option<String>) -> Option<Action> {
+        match message {
+            RithmicMsg::Enabled(value) => self.enabled = value,
+            RithmicMsg::Url(value) => self.url = value,
+            RithmicMsg::SystemName(value) => self.system_name = value,
+            RithmicMsg::AppName(value) => self.app_name = value,
+            RithmicMsg::AppVersion(value) => self.app_version = value,
+            RithmicMsg::User(value) => self.user = value,
+            RithmicMsg::Password(value) => self.password = value,
+            RithmicMsg::Apply => {
+                if self.enabled
+                    && (!self.url.starts_with("wss://")
+                        || self.system_name.trim().is_empty()
+                        || self.app_name.trim().is_empty()
+                        || self.app_version.trim().is_empty()
+                        || self.user.trim().is_empty()
+                        || self.password.is_empty())
+                {
+                    *error =
+                        Some("Rithmic richiede WSS, sistema, app, utente e password.".to_string());
+                    return None;
+                }
+                *error = None;
+                return Some(Action::ApplyRithmicConfig(
+                    data::config::network::RithmicSettings {
+                        enabled: self.enabled,
+                        url: self.url.trim().to_string(),
+                        system_name: self.system_name.trim().to_string(),
+                        app_name: self.app_name.trim().to_string(),
+                        app_version: self.app_version.trim().to_string(),
+                        user: self.enabled.then(|| self.user.trim().to_string()),
+                        password: self.enabled.then(|| self.password.clone()),
+                    },
+                ));
+            }
+        }
+        None
+    }
+
+    fn view<'a>(
+        &'a self,
+        effective: &'a data::config::network::RithmicSettings,
+    ) -> Element<'a, RithmicMsg> {
+        let status = if effective.enabled {
+            "Enabled"
+        } else {
+            "Disabled"
+        };
+        let body = column![
+            text(format!("Rithmic futures ({status})")).size(crate::style::text_size::BODY),
+            checkbox(self.enabled)
+                .label("Enable Rithmic Test")
+                .on_toggle(RithmicMsg::Enabled),
+            text_input("WSS URL", &self.url).on_input(RithmicMsg::Url),
+            text_input("System name", &self.system_name).on_input(RithmicMsg::SystemName),
+            text_input("Application name", &self.app_name).on_input(RithmicMsg::AppName),
+            text_input("Application version", &self.app_version).on_input(RithmicMsg::AppVersion),
+            text_input("Username", &self.user).on_input(RithmicMsg::User),
+            text_input("Password", &self.password)
+                .secure(true)
+                .on_input(RithmicMsg::Password),
+            button("Save Rithmic settings").on_press(RithmicMsg::Apply),
+        ]
+        .spacing(6);
+        container(body)
+            .padding(8)
+            .style(style::modal_container)
             .into()
     }
 }

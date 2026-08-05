@@ -1368,6 +1368,7 @@ pub fn request_fetch(
                     ticker_info.exchange(),
                     Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
                 );
+                let supports_exchange_trades = ticker_info.exchange().supports_historical_trades();
                 let mode = trade_fetch_mode();
 
                 if mode == TradeFetchMode::Server && server.is_none() {
@@ -1379,11 +1380,11 @@ pub fn request_fetch(
                     });
                 }
 
-                if mode == TradeFetchMode::Exchange && !is_binance {
+                if mode == TradeFetchMode::Exchange && !supports_exchange_trades {
                     return Task::done(FetchUpdate::Error {
                         pane_id,
                         error: format!(
-                            "Trade fetch via exchange API is only supported for Binance, got {}",
+                            "Trade fetch via exchange API is not supported for {}",
                             ticker_info.exchange()
                         ),
                         req_id: Some(req_id),
@@ -1391,8 +1392,12 @@ pub fn request_fetch(
                     });
                 }
 
-                if server.is_some() || is_binance {
-                    let data_path = data::data_path(Some("market_data/binance/"));
+                if server.is_some() || supports_exchange_trades {
+                    let data_path = if is_binance {
+                        data::data_path(Some("market_data/binance/"))
+                    } else {
+                        data::data_path(None)
+                    };
                     log::info!(
                         "TRADE Start | venue={} symbol={} range={} req={} pane={} stream={} path={}",
                         format_venue(&ticker_info),
@@ -1541,8 +1546,12 @@ pub fn request_fetch(
                     Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
                 );
 
-                if is_binance {
-                    let data_path = data::data_path(Some("market_data/binance/"));
+                if ticker_info.exchange().supports_historical_trades() {
+                    let data_path = if is_binance {
+                        data::data_path(Some("market_data/binance/"))
+                    } else {
+                        data::data_path(None)
+                    };
                     log::info!(
                         "BUBBLE Summary Request | venue={} symbol={} range={} tf={timeframe:?} timeframe_ms={} max_candidates={} req={} pane={}",
                         format_venue(&ticker_info),
@@ -1573,7 +1582,7 @@ pub fn request_fetch(
                 }
 
                 log::warn!(
-                    "BUBBLE Summary Skip | venue={} symbol={} req={} reason=unsupported_exchange range={}",
+                    "BUBBLE Summary Skip | venue={} symbol={} req={} reason=no_historical_trades range={}",
                     format_venue(&ticker_info),
                     format_symbol(&ticker_info),
                     short_id(req_id),

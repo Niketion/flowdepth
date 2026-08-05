@@ -45,6 +45,7 @@ pub fn allowed_multipliers_for_min_tick(min_ticksize: MinTicksize) -> &'static [
 fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
     match market {
         MarketKind::Spot | MarketKind::LinearPerps | MarketKind::InversePerps => RawQtyUnit::Base,
+        MarketKind::Futures => unreachable!("Hyperliquid does not support Rithmic futures"),
     }
 }
 

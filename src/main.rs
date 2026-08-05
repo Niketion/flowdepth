@@ -1459,6 +1459,11 @@ impl Flowsurface {
                                 }
                             }
                         }
+                        Some(dashboard::Event::SearchRithmic(query)) => {
+                            Task::done(Message::Sidebar(dashboard::sidebar::Message::TickersTable(
+                                dashboard::tickers_table::Message::UpdateSearchQuery(query),
+                            )))
+                        }
                         Some(dashboard::Event::RequestPalette) => {
                             let theme = self.theme.0.clone();
 
@@ -1874,6 +1879,45 @@ impl Flowsurface {
                             .collect::<Vec<window::Id>>();
                         active_windows.push(main_window);
 
+                        return window::collect_window_specs(
+                            active_windows,
+                            Message::SaveStateRequested,
+                        );
+                    }
+                    Some(network_editor::Action::ApplyRithmicConfig(settings)) => {
+                        if settings.enabled {
+                            if let (Some(user), Some(password)) =
+                                (settings.user.as_deref(), settings.password.as_deref())
+                            {
+                                data::config::auth::save_rithmic_credentials(
+                                    &settings.url,
+                                    user,
+                                    password,
+                                );
+                            }
+                        } else {
+                            data::config::auth::delete_rithmic_credentials(
+                                &self.network_config.rithmic.url,
+                            );
+                        }
+                        self.network_config.rithmic = settings;
+
+                        self.confirm_dialog = Some(
+                            screen::ConfirmDialog::new(
+                                "Rithmic settings saved. Restart now to apply?".to_string(),
+                                Box::new(Message::RestartRequested(None)),
+                            )
+                            .with_confirm_btn_text("Restart now".to_string()),
+                        );
+
+                        let main_window = self.main_window.id;
+                        let mut active_windows = self
+                            .active_dashboard()
+                            .popout
+                            .keys()
+                            .copied()
+                            .collect::<Vec<window::Id>>();
+                        active_windows.push(main_window);
                         return window::collect_window_specs(
                             active_windows,
                             Message::SaveStateRequested,

@@ -115,11 +115,13 @@ pub(super) async fn fetch_depth_snapshot(
         MarketKind::Spot => format!("{SPOT_DOMAIN}/api/v3/depth"),
         MarketKind::LinearPerps => format!("{LINEAR_PERP_DOMAIN}/fapi/v1/depth"),
         MarketKind::InversePerps => format!("{INVERSE_PERP_DOMAIN}/dapi/v1/depth"),
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     };
 
     let depth_limit = match market_type {
         MarketKind::Spot => 5000,
         MarketKind::LinearPerps | MarketKind::InversePerps => 1000,
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     };
 
     let url = format!(
@@ -152,6 +154,7 @@ pub(super) async fn fetch_depth_snapshot(
                 )));
             }
         },
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     };
 
     let text = hub.http_text_with_limiter(&url, weight, None, None).await?;
@@ -207,6 +210,7 @@ pub(super) async fn fetch_depth_snapshot(
                     .collect(),
             })
         }
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     }
 }
 
@@ -221,6 +225,7 @@ pub(super) async fn fetch_ticker_metadata(
         ),
         MarketKind::LinearPerps => (format!("{LINEAR_PERP_DOMAIN}/fapi/v1/exchangeInfo"), 1),
         MarketKind::InversePerps => (format!("{INVERSE_PERP_DOMAIN}/dapi/v1/exchangeInfo"), 1),
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     };
 
     let response_text = hub
@@ -311,6 +316,7 @@ pub(super) async fn fetch_ticker_stats(
         MarketKind::Spot => (format!("{SPOT_DOMAIN}/api/v3/ticker/24hr"), 80),
         MarketKind::LinearPerps => (format!("{LINEAR_PERP_DOMAIN}/fapi/v1/ticker/24hr"), 40),
         MarketKind::InversePerps => (format!("{INVERSE_PERP_DOMAIN}/dapi/v1/ticker/24hr"), 40),
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     };
 
     let parsed_response: Vec<Value> = hub.http_json_with_limiter(&url, weight, None, None).await?;
@@ -362,6 +368,7 @@ pub(super) async fn fetch_ticker_stats(
 
                 Qty::from_f64(volume * contract_size)
             }
+            MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
         };
 
         let ticker_stats = TickerStats {
@@ -391,6 +398,7 @@ pub(super) async fn fetch_klines(
         MarketKind::Spot => format!("{SPOT_DOMAIN}/api/v3/klines"),
         MarketKind::LinearPerps => format!("{LINEAR_PERP_DOMAIN}/fapi/v1/klines"),
         MarketKind::InversePerps => format!("{INVERSE_PERP_DOMAIN}/dapi/v1/klines"),
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     };
 
     let mut url = format!("{base_url}?symbol={symbol_str}&interval={timeframe_str}");
@@ -435,6 +443,7 @@ pub(super) async fn fetch_klines(
                 )));
             }
         },
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     };
 
     let fetched_klines: Vec<FetchedKline> =
@@ -515,6 +524,11 @@ pub(super) async fn fetch_historical_oi(
                 format!("?pair={pair}&contractType=PERPETUAL"),
                 1,
             )
+        }
+        MarketKind::Futures => {
+            return Err(AdapterError::InvalidRequest(
+                "Binance does not support Rithmic futures".to_string(),
+            ));
         }
         _ => {
             let err_msg = format!("Unsupported market type for open interest: {market:?}");
@@ -598,6 +612,7 @@ async fn fetch_intraday_trades(
         MarketKind::Spot => (format!("{SPOT_DOMAIN}/api/v3/aggTrades"), 4),
         MarketKind::LinearPerps => (format!("{LINEAR_PERP_DOMAIN}/fapi/v1/aggTrades"), 20),
         MarketKind::InversePerps => (format!("{INVERSE_PERP_DOMAIN}/dapi/v1/aggTrades"), 20),
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     };
 
     let mut url = format!("{base_url}?symbol={symbol_str}&limit=1000");
@@ -638,6 +653,7 @@ async fn get_hist_trades_with_client(
         MarketKind::Spot => format!("data/spot/daily/aggTrades/{symbol}"),
         MarketKind::LinearPerps => format!("data/futures/um/daily/aggTrades/{symbol}"),
         MarketKind::InversePerps => format!("data/futures/cm/daily/aggTrades/{symbol}"),
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     };
 
     let zip_file_name = format!(

@@ -39,5 +39,7 @@ webpki-roots = "0.23.1"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 csv = "1.4.0"
 tokio-socks = "0.5.2"
+rithmic-rs = "2.0.0"
+async-stream = "0.3.6"
 base64 = "0.22.1"
 futures = { version = "0.3.32", default-features = false, features = ["std", "async-await"] }

@@ -63,6 +63,7 @@ pub(super) async fn fetch_ticker_metadata(
         MarketKind::Spot => "spot",
         MarketKind::LinearPerps => "linear",
         MarketKind::InversePerps => "inverse",
+        MarketKind::Futures => unreachable!("Bybit does not support Rithmic futures"),
     };
 
     let url = format!("{FETCH_DOMAIN}/v5/market/instruments-info?category={market}&limit=1000",);
@@ -134,6 +135,7 @@ pub(super) async fn fetch_ticker_stats(
         MarketKind::Spot => "spot",
         MarketKind::LinearPerps => "linear",
         MarketKind::InversePerps => "inverse",
+        MarketKind::Futures => unreachable!("Bybit does not support Rithmic futures"),
     };
 
     let url = format!("{FETCH_DOMAIN}/v5/market/tickers?category={market}");
@@ -202,6 +204,7 @@ pub(super) async fn fetch_klines(
         MarketKind::Spot => "spot",
         MarketKind::LinearPerps => "linear",
         MarketKind::InversePerps => "inverse",
+        MarketKind::Futures => unreachable!("Bybit does not support Rithmic futures"),
     };
 
     let mut url = format!(

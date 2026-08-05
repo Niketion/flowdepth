@@ -44,9 +44,13 @@ impl Sidebar {
     ) -> (Self, Task<Message>) {
         let (tickers_table, initial_fetch) =
             if let Some(settings) = state.sidebar.tickers_table.as_ref() {
-                TickersTable::new_with_settings(settings, handles.clone())
+                TickersTable::new_with_settings(
+                    settings,
+                    handles.clone(),
+                    state.network.rithmic.enabled,
+                )
             } else {
-                TickersTable::new(handles)
+                TickersTable::new(handles, state.network.rithmic.enabled)
             };
 
         (

@@ -14,6 +14,7 @@ use data::{
 use exchange::{
     Ticker, TickerInfo, TickerStats,
     adapter::{AdapterHandles, Exchange, MarketKind, Venue},
+    unit::{Price, Qty},
 };
 use iced::{
     Alignment, Element, Length, Renderer, Size, Subscription, Task, Theme,
@@ -71,11 +72,12 @@ fn matches_options_filter(
 
 fn available_markets(venue: Venue) -> &'static [MarketKind] {
     match venue {
-        Venue::Binance | Venue::Bybit | Venue::Okex => &MarketKind::ALL,
+        Venue::Binance | Venue::Bybit | Venue::Okex => &MarketKind::CRYPTO,
         Venue::Hyperliquid => &[MarketKind::Spot, MarketKind::LinearPerps],
         // Skip metadata fetch for Mexc spot as it requires protobuf for websocket
         // TODO: include after protobuf implementation and Mexc spot markets ready to stream
         Venue::Mexc => &[MarketKind::LinearPerps, MarketKind::InversePerps],
+        Venue::Rithmic => &[MarketKind::Futures],
     }
 }
 
@@ -89,6 +91,7 @@ pub enum Action {
 #[derive(Debug, Clone)]
 pub enum Message {
     UpdateSearchQuery(String),
+    UpdateRithmicSearch(Vec<TickerInfo>),
     ChangeSortOption(SortOptions),
     ShowSortingOptions,
     TickerSelected(Ticker, Option<ContentKind>),
@@ -130,15 +133,27 @@ pub struct TickersTable {
 }
 
 impl TickersTable {
-    pub fn new(handles: AdapterHandles) -> (Self, Task<Message>) {
-        Self::new_with_settings(&Settings::default(), handles)
+    pub fn new(handles: AdapterHandles, rithmic_enabled: bool) -> (Self, Task<Message>) {
+        Self::new_with_settings(&Settings::default(), handles, rithmic_enabled)
     }
 
     pub fn new_with_settings(
         settings: &Settings,
         handles: AdapterHandles,
+        rithmic_enabled: bool,
     ) -> (Self, Task<Message>) {
-        let selected_exchanges = settings.selected_exchanges.to_vec();
+        let mut selected_exchanges = settings.selected_exchanges.to_vec();
+        let mut selected_markets = settings
+            .selected_markets
+            .iter()
+            .copied()
+            .collect::<FxHashSet<_>>();
+        if rithmic_enabled {
+            if !selected_exchanges.contains(&Venue::Rithmic) {
+                selected_exchanges.push(Venue::Rithmic);
+            }
+            selected_markets.insert(MarketKind::Futures);
+        }
 
         let fetch_metadata = selected_exchanges
             .iter()
@@ -158,8 +173,8 @@ impl TickersTable {
                 is_shown: false,
                 tickers_info: FxHashMap::default(),
                 unavailable_exchanges: FxHashSet::default(),
-                selected_exchanges: settings.selected_exchanges.iter().cloned().collect(),
-                selected_markets: settings.selected_markets.iter().cloned().collect(),
+                selected_exchanges: selected_exchanges.iter().copied().collect(),
+                selected_markets,
                 show_favorites: settings.show_favorites,
                 row_index: FxHashMap::default(),
                 metadata_fetch_state: MetadataFetchState::with_pending(selected_exchanges),
@@ -184,6 +199,30 @@ impl TickersTable {
         match message {
             Message::UpdateSearchQuery(query) => {
                 self.search_query = query.to_uppercase();
+                if self.selected_exchanges.contains(&Venue::Rithmic) && self.search_query.len() >= 2
+                {
+                    return Some(Action::Fetch(search_rithmic_task(
+                        &self.handles,
+                        self.search_query.clone(),
+                    )));
+                }
+            }
+            Message::UpdateRithmicSearch(instruments) => {
+                let mut stats = HashMap::new();
+                for ticker_info in instruments {
+                    self.tickers_info
+                        .insert(ticker_info.ticker, Some(ticker_info));
+                    stats.insert(
+                        ticker_info.ticker,
+                        TickerStats {
+                            mark_price: Price::from_f64(0.0),
+                            daily_price_chg: 0.0,
+                            daily_volume: Qty::from_f64(0.0),
+                        },
+                    );
+                }
+                self.update_ticker_rows(Venue::Rithmic, stats);
+                self.sort_ticker_rows();
             }
             Message::ChangeSortOption(option) => {
                 self.change_sort_option(option);
@@ -756,6 +795,7 @@ impl TickersTable {
         let spot_market_button = self.market_filter_btn("Spot", MarketKind::Spot);
         let linear_markets_btn = self.market_filter_btn("Linear", MarketKind::LinearPerps);
         let inverse_markets_btn = self.market_filter_btn("Inverse", MarketKind::InversePerps);
+        let futures_market_btn = self.market_filter_btn("Futures", MarketKind::Futures);
 
         let exchange_filters = {
             let mut col = column![];
@@ -788,13 +828,19 @@ impl TickersTable {
                 spot_market_button.width(Length::Fill),
                 linear_markets_btn.width(Length::Fill),
                 inverse_markets_btn.width(Length::Fill),
+                futures_market_btn.width(Length::Fill),
             ]
             .spacing(4),
             rule::horizontal(1.0).style(style::split_ruler),
             exchange_filters,
             rule::horizontal(1.0).style(style::split_ruler),
             text(if total == 0 {
-                "No tickers match filters".to_string()
+                if self.selected_exchanges.contains(&Venue::Rithmic) && self.search_query.len() < 2
+                {
+                    "Search a Rithmic contract (e.g. NQ or ES)".to_string()
+                } else {
+                    "No tickers match filters".to_string()
+                }
             } else {
                 let ticker_str = if total == 1 { "ticker" } else { "tickers" };
                 let exchanges = self.selected_exchanges.len();
@@ -1096,6 +1142,7 @@ impl TickersTable {
                         + match market {
                             MarketKind::Spot => "",
                             MarketKind::LinearPerps | MarketKind::InversePerps => " Perp",
+                            MarketKind::Futures => " Future",
                         }
                 ),
             ]
@@ -1722,6 +1769,23 @@ fn fetch_metadata_task(handles: &AdapterHandles, venue: Venue) -> Task<Message> 
             )
         }
     })
+}
+
+fn search_rithmic_task(handles: &AdapterHandles, query: String) -> Task<Message> {
+    let handles = handles.clone();
+    Task::perform(
+        async move { handles.search_ticker_metadata(Venue::Rithmic, &query).await },
+        |result| match result {
+            Ok(instruments) => Message::UpdateRithmicSearch(instruments),
+            Err(error) => {
+                log::error!("Rithmic symbol search failed: {error}");
+                Message::MetadataFetchFailed(
+                    Venue::Rithmic,
+                    InternalError::Fetch(error.ui_message()),
+                )
+            }
+        },
+    )
 }
 
 /// Keeps ticker-stats fetch behavior predictable and spam-safe.

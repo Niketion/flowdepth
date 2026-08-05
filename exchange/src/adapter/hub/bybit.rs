@@ -22,6 +22,7 @@ fn exchange_from_market_type(market: MarketKind) -> Exchange {
         MarketKind::Spot => Exchange::BybitSpot,
         MarketKind::LinearPerps => Exchange::BybitLinear,
         MarketKind::InversePerps => Exchange::BybitInverse,
+        MarketKind::Futures => unreachable!("Bybit does not support Rithmic futures"),
     }
 }
 
@@ -29,6 +30,7 @@ fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
     match market {
         MarketKind::Spot | MarketKind::LinearPerps => RawQtyUnit::Base,
         MarketKind::InversePerps => RawQtyUnit::Quote,
+        MarketKind::Futures => unreachable!("Bybit does not support Rithmic futures"),
     }
 }
 

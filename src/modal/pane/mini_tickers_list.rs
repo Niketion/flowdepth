@@ -74,6 +74,10 @@ impl MiniPanel {
         None
     }
 
+    pub fn search_query(&self) -> &str {
+        &self.search_query
+    }
+
     pub fn view<'a>(
         &'a self,
         table: &'a TickersTable,

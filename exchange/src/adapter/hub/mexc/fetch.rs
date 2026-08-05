@@ -396,6 +396,7 @@ pub(super) async fn fetch_klines(
             symbol_str.to_uppercase(),
             timeframe_str
         ),
+        MarketKind::Futures => unreachable!("MEXC does not support Rithmic futures"),
     };
 
     if let Some((start_ms, end_ms)) = range {
@@ -410,6 +411,7 @@ pub(super) async fn fetch_klines(
                 let end_sec = end_ms / 1000;
                 url.push_str(&format!("&start={}&end={}", start_sec, end_sec));
             }
+            MarketKind::Futures => unreachable!("MEXC does not support Rithmic futures"),
         }
     }
 
@@ -501,6 +503,7 @@ pub(super) async fn fetch_klines(
                 })
                 .collect()
         }
+        MarketKind::Futures => unreachable!("MEXC does not support Rithmic futures"),
     };
 
     klines_result

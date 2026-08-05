@@ -3,6 +3,7 @@ pub mod bybit;
 pub mod hyperliquid;
 pub mod mexc;
 pub mod okex;
+pub mod rithmic;
 
 use super::AdapterError;
 

@@ -23,6 +23,7 @@ fn exchange_from_market_type(market: MarketKind) -> Exchange {
         MarketKind::Spot => Exchange::MexcSpot,
         MarketKind::LinearPerps => Exchange::MexcLinear,
         MarketKind::InversePerps => Exchange::MexcInverse,
+        MarketKind::Futures => unreachable!("MEXC does not support Rithmic futures"),
     }
 }
 
@@ -30,6 +31,7 @@ fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
     match market {
         MarketKind::Spot => RawQtyUnit::Base,
         MarketKind::LinearPerps | MarketKind::InversePerps => RawQtyUnit::Contracts,
+        MarketKind::Futures => unreachable!("MEXC does not support Rithmic futures"),
     }
 }
 
@@ -48,6 +50,7 @@ fn contract_size_for_market(
                 ))
             })
         }
+        MarketKind::Futures => unreachable!("MEXC does not support Rithmic futures"),
     }
 }
 

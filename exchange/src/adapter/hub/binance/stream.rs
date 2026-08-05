@@ -32,6 +32,7 @@ fn ws_domain_from_market_type(market: MarketKind) -> &'static str {
         MarketKind::Spot => "stream.binance.com",
         MarketKind::LinearPerps => "fstream.binance.com",
         MarketKind::InversePerps => "dstream.binance.com",
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     }
 }
 
@@ -48,6 +49,7 @@ fn ws_stream_path(market: MarketKind, traffic_kind: WsTrafficKind) -> &'static s
             WsTrafficKind::Public => "public/stream",
             WsTrafficKind::Market => "market/stream",
         },
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     }
 }
 
@@ -427,6 +429,7 @@ fn feed_de(slice: &[u8], market: MarketKind) -> Result<StreamData, AdapterError>
 
                         return Ok(StreamData::Depth(SonicDepth::Perp(depth)));
                     }
+                    MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
                 },
                 Some(StreamWrapper::Kline) => {
                     let kline_wrap: SonicKlineWrap = sonic_rs::from_str(&v.as_raw_faststr())

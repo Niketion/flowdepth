@@ -21,7 +21,7 @@ impl Default for Settings {
             favorited_tickers: vec![],
             show_favorites: false,
             selected_sort_option: SortOptions::VolumeDesc,
-            selected_exchanges: Venue::ALL.to_vec(),
+            selected_exchanges: Venue::PUBLIC.to_vec(),
             selected_markets: MarketKind::ALL.into_iter().collect(),
         }
     }
@@ -168,6 +168,7 @@ pub fn market_suffix(market: MarketKind) -> &'static str {
     match market {
         MarketKind::Spot => "",
         MarketKind::LinearPerps | MarketKind::InversePerps => "P",
+        MarketKind::Futures => "F",
     }
 }
 

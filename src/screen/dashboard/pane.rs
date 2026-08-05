@@ -56,6 +56,7 @@ pub enum Effect {
     RefreshStreams,
     RequestFetch(Vec<FetchSpec>),
     SwitchTickersInGroup(TickerInfo),
+    SearchRithmic(String),
     FocusWidget(iced::widget::Id),
 }
 
@@ -854,7 +855,7 @@ impl State {
         self.status = Status::Ready;
     }
 
-    fn has_stream(&self) -> bool {
+    pub(super) fn has_stream(&self) -> bool {
         match &self.streams {
             ResolvedStream::Ready(streams) => !streams.is_empty(),
             ResolvedStream::Waiting { streams, .. } => !streams.is_empty(),
@@ -909,6 +910,7 @@ impl State {
                 match base_ti.ticker.market_type() {
                     MarketKind::Spot => symbol,
                     MarketKind::LinearPerps | MarketKind::InversePerps => symbol + " PERP",
+                    MarketKind::Futures => symbol + " FUT",
                 }
             };
             if extra > 0 {
@@ -2017,6 +2019,10 @@ impl State {
                 }
             }
             Event::MiniTickersListInteraction(message) => {
+                let search_changed = matches!(
+                    &message,
+                    modal::pane::mini_tickers_list::Message::SearchChanged(_)
+                );
                 if let Some(Modal::GexLiquidityReference(ref mut mini_panel)) = self.modal
                     && let Some(action) = mini_panel.update(message.clone())
                 {
@@ -2075,6 +2081,12 @@ impl State {
                             return Some(Effect::SwitchTickersInGroup(ti));
                         }
                     }
+                }
+                if search_changed
+                    && let Some(Modal::MiniTickersList(mini_panel)) = &self.modal
+                    && !mini_panel.search_query().is_empty()
+                {
+                    return Some(Effect::SearchRithmic(mini_panel.search_query().to_string()));
                 }
             }
         }

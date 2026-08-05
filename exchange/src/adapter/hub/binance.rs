@@ -27,6 +27,7 @@ fn exchange_from_market_type(market: MarketKind) -> Exchange {
         MarketKind::Spot => Exchange::BinanceSpot,
         MarketKind::LinearPerps => Exchange::BinanceLinear,
         MarketKind::InversePerps => Exchange::BinanceInverse,
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     }
 }
 
@@ -34,6 +35,7 @@ fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
     match market {
         MarketKind::Spot | MarketKind::LinearPerps => RawQtyUnit::Base,
         MarketKind::InversePerps => RawQtyUnit::Contracts,
+        MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
     }
 }
 
@@ -61,6 +63,7 @@ impl BinanceConfig {
         let max_weight = match market {
             MarketKind::Spot => self.spot_limit,
             MarketKind::LinearPerps | MarketKind::InversePerps => self.perps_limit,
+            MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
         };
 
         DynamicRateLimiterConfig::new(
@@ -263,6 +266,7 @@ impl Worker {
             MarketKind::Spot => &mut self.spot_hub,
             MarketKind::LinearPerps => &mut self.linear_hub,
             MarketKind::InversePerps => &mut self.inverse_hub,
+            MarketKind::Futures => unreachable!("Binance does not support Rithmic futures"),
         }
     }
 }

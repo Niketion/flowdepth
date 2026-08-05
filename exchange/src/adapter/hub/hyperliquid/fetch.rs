@@ -123,6 +123,9 @@ async fn fetch_metadata(
     match market {
         MarketKind::LinearPerps => fetch_perps_metadata(hub).await,
         MarketKind::Spot => fetch_spot_metadata(hub).await,
+        MarketKind::Futures => Err(AdapterError::InvalidRequest(
+            "Hyperliquid does not support Rithmic futures".to_string(),
+        )),
         _ => Err(AdapterError::InvalidRequest(format!(
             "Hyperliquid metadata fetch not supported for {market:?}"
         ))),
@@ -407,6 +410,7 @@ fn compute_tick_size(price: f64, sz_decimals: u32, market: MarketKind) -> f32 {
 
     let max_system_decimals = match market {
         MarketKind::LinearPerps => MAX_DECIMALS_PERP as i32,
+        MarketKind::Futures => unreachable!("Hyperliquid does not support Rithmic futures"),
         _ => MAX_DECIMALS_PERP as i32,
     };
     let decimal_cap = (max_system_decimals - sz_decimals as i32).max(0);

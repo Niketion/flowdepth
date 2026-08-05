@@ -22,6 +22,7 @@ fn exchange_from_market_type(market_type: MarketKind) -> Exchange {
         MarketKind::Spot => Exchange::OkexSpot,
         MarketKind::LinearPerps => Exchange::OkexLinear,
         MarketKind::InversePerps => Exchange::OkexInverse,
+        MarketKind::Futures => unreachable!("OKX does not support Rithmic futures"),
     }
 }
 
@@ -29,6 +30,7 @@ fn raw_qty_unit_from_market_type(market: MarketKind) -> RawQtyUnit {
     match market {
         MarketKind::Spot => RawQtyUnit::Base,
         MarketKind::LinearPerps | MarketKind::InversePerps => RawQtyUnit::Contracts,
+        MarketKind::Futures => unreachable!("OKX does not support Rithmic futures"),
     }
 }
 

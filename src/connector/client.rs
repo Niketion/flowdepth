@@ -23,7 +23,8 @@ impl DataSources {
         let (exchange_http, server_http) = Self::build_http_clients(proxy);
 
         let server = ServerClient::from_mode(&server_http, network);
-        let exchange = AdapterHandles::spawn_venues(&exchange_http, Venue::ALL, proxy);
+        let exchange = AdapterHandles::spawn_venues(&exchange_http, Venue::PUBLIC, proxy)
+            .with_rithmic(network.rithmic.adapter_config());
 
         Self { exchange, server }
     }
@@ -326,6 +327,7 @@ fn parse_arrow_trades(
     let raw_qty_unit = match market_kind {
         MarketKind::InversePerps => RawQtyUnit::Quote,
         MarketKind::Spot | MarketKind::LinearPerps => RawQtyUnit::Base,
+        MarketKind::Futures => RawQtyUnit::Contracts,
     };
 
     let size_in_quote_ccy = volume_size_unit() == SizeUnit::Quote;

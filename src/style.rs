@@ -88,6 +88,7 @@ pub fn venue_icon(venue: exchange::adapter::Venue) -> Icon {
         exchange::adapter::Venue::Hyperliquid => Icon::HyperliquidLogo,
         exchange::adapter::Venue::Okex => Icon::OkexLogo,
         exchange::adapter::Venue::Mexc => Icon::MexcLogo,
+        exchange::adapter::Venue::Rithmic => Icon::ExternalLink,
     }
 }
 

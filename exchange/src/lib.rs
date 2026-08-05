@@ -240,7 +240,10 @@ impl Serialize for SerTicker {
     {
         let (ticker_str, _) = self.ticker.to_full_symbol_and_type();
         let exchange_str = Self::exchange_to_string(self.exchange);
-        let combined = format!("{}:{}", exchange_str, ticker_str);
+        let combined = self.ticker.route().map_or_else(
+            || format!("{}:{}", exchange_str, ticker_str),
+            |route| format!("{}:{}/{}", exchange_str, route, ticker_str),
+        );
         serializer.serialize_str(&combined)
     }
 }
@@ -264,7 +267,11 @@ impl<'de> Deserialize<'de> for SerTicker {
         let exchange = Self::string_to_exchange(exchange_str).map_err(serde::de::Error::custom)?;
 
         let ticker_str = parts[1];
-        let ticker = Ticker::new(ticker_str, exchange);
+        let ticker = if let Some((route, symbol)) = ticker_str.split_once('/') {
+            Ticker::new_routed(symbol, exchange, route, None)
+        } else {
+            Ticker::new(ticker_str, exchange)
+        };
 
         Ok(SerTicker { exchange, ticker })
     }
@@ -274,7 +281,11 @@ impl fmt::Display for SerTicker {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let (ticker_str, _) = self.ticker.to_full_symbol_and_type();
         let exchange_str = Self::exchange_to_string(self.exchange);
-        write!(f, "{}:{}", exchange_str, ticker_str)
+        if let Some(route) = self.ticker.route() {
+            write!(f, "{}:{}/{}", exchange_str, route, ticker_str)
+        } else {
+            write!(f, "{}:{}", exchange_str, ticker_str)
+        }
     }
 }
 
@@ -282,6 +293,10 @@ impl fmt::Display for SerTicker {
 pub struct Ticker {
     bytes: [u8; Ticker::MAX_LEN as usize],
     pub exchange: Exchange,
+    // Native venue route required by providers such as Rithmic, where a symbol
+    // is only unique together with its exchange code (for example CME/ESM6).
+    route_bytes: [u8; Ticker::MAX_ROUTE_LEN as usize],
+    has_route: bool,
     // Optional display symbol for UI, mainly used for Hyperliquid spot markets
     // to show "HYPEUSDC" instead of "@107"
     display_bytes: [u8; Ticker::MAX_LEN as usize],
@@ -290,6 +305,7 @@ pub struct Ticker {
 
 impl Ticker {
     const MAX_LEN: u8 = 28;
+    const MAX_ROUTE_LEN: u8 = 16;
 
     pub fn new(ticker: &str, exchange: Exchange) -> Self {
         Self::new_with_display(ticker, exchange, None)
@@ -300,6 +316,7 @@ impl Ticker {
         exchange: Exchange,
         display_symbol: Option<&str>,
     ) -> Self {
+        assert!(ticker.is_ascii(), "Ticker must be ASCII");
         assert!(ticker.len() <= Self::MAX_LEN as usize, "Ticker too long");
         assert!(!ticker.contains('|'), "Ticker cannot contain '|'");
 
@@ -324,9 +341,37 @@ impl Ticker {
         Ticker {
             bytes,
             exchange,
+            route_bytes: [0; Self::MAX_ROUTE_LEN as usize],
+            has_route: false,
             display_bytes,
             has_display_symbol,
         }
+    }
+
+    pub fn new_routed(
+        ticker: &str,
+        exchange: Exchange,
+        route: &str,
+        display_symbol: Option<&str>,
+    ) -> Self {
+        assert!(route.is_ascii(), "Ticker route must be ASCII");
+        assert!(!route.is_empty(), "Ticker route cannot be empty");
+        assert!(
+            route.len() <= Self::MAX_ROUTE_LEN as usize,
+            "Ticker route too long"
+        );
+        assert!(
+            !route.contains(['|', '/', ':']),
+            "Ticker route contains a reserved delimiter"
+        );
+
+        let display_symbol = display_symbol.filter(|display| {
+            display.is_ascii() && display.len() <= Self::MAX_LEN as usize && !display.contains('|')
+        });
+        let mut ticker = Self::new_with_display(ticker, exchange, display_symbol);
+        ticker.route_bytes[..route.len()].copy_from_slice(route.as_bytes());
+        ticker.has_route = true;
+        ticker
     }
 
     #[inline]
@@ -351,6 +396,22 @@ impl Ticker {
         } else {
             self.as_str()
         }
+    }
+
+    #[inline]
+    fn route_as_str(&self) -> Option<&str> {
+        self.has_route.then(|| {
+            let end = self
+                .route_bytes
+                .iter()
+                .position(|&b| b == 0)
+                .unwrap_or(Self::MAX_ROUTE_LEN as usize);
+            std::str::from_utf8(&self.route_bytes[..end]).unwrap()
+        })
+    }
+
+    pub fn route(&self) -> Option<&str> {
+        self.route_as_str()
     }
 
     /// Get the display symbol if it exists, otherwise None
@@ -384,10 +445,10 @@ impl Ticker {
     }
 
     pub fn symbol_and_exchange_string(&self) -> String {
-        format!(
-            "{}:{}",
-            SerTicker::exchange_to_string(self.exchange),
-            self.as_str()
+        let exchange = SerTicker::exchange_to_string(self.exchange);
+        self.route_as_str().map_or_else(
+            || format!("{exchange}:{}", self.as_str()),
+            |route| format!("{exchange}:{route}/{}", self.as_str()),
         )
     }
 }
@@ -432,9 +493,15 @@ impl Serialize for Ticker {
         let exchange = SerTicker::exchange_to_string(self.exchange);
         let s = if self.has_display_symbol {
             let display = self.display_as_str();
-            format!("{exchange}:{internal}|{display}")
+            self.route_as_str().map_or_else(
+                || format!("{exchange}:{internal}|{display}"),
+                |route| format!("{exchange}:{route}/{internal}|{display}"),
+            )
         } else {
-            format!("{exchange}:{internal}")
+            self.route_as_str().map_or_else(
+                || format!("{exchange}:{internal}"),
+                |route| format!("{exchange}:{route}/{internal}"),
+            )
         };
         serializer.serialize_str(&s)
     }
@@ -466,12 +533,20 @@ impl<'de> Deserialize<'de> for Ticker {
                 let exchange = SerTicker::string_to_exchange(exchange_str)
                     .map_err(serde::de::Error::custom)?;
 
-                let (symbol, display) = if let Some((sym, disp)) = rest.split_once('|') {
+                let (symbol_and_route, display) = if let Some((sym, disp)) = rest.split_once('|') {
                     (sym, Some(disp))
                 } else {
                     (rest, None)
                 };
-                Ok(Ticker::new_with_display(symbol, exchange, display))
+                if let Some((route, symbol)) = symbol_and_route.split_once('/') {
+                    Ok(Ticker::new_routed(symbol, exchange, route, display))
+                } else {
+                    Ok(Ticker::new_with_display(
+                        symbol_and_route,
+                        exchange,
+                        display,
+                    ))
+                }
             }
             TickerDe::Old {
                 data,
@@ -521,6 +596,9 @@ pub struct TickerInfo {
     pub min_ticksize: MinTicksize,
     pub min_qty: MinQtySize,
     pub contract_size: Option<ContractSize>,
+    /// Monetary value of one full price point for a futures contract.
+    #[serde(default)]
+    pub point_value: Option<Price>,
 }
 
 impl TickerInfo {
@@ -535,7 +613,15 @@ impl TickerInfo {
             min_ticksize: MinTicksize::from(min_ticksize),
             min_qty: MinQtySize::from(min_qty),
             contract_size: contract_size.map(ContractSize::from),
+            point_value: None,
         }
+    }
+
+    pub fn with_point_value(mut self, point_value: Option<f64>) -> Self {
+        self.point_value = point_value
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .map(Price::from_f64);
+        self
     }
 
     pub fn market_type(&self) -> MarketKind {

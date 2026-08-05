@@ -244,6 +244,9 @@ impl QtyNormalization {
     }
 
     fn normalize_with_raw_unit(self, qty: f64, price: f64, raw_qty_unit: RawQtyUnit) -> f64 {
+        if matches!(self.market_kind, MarketKind::Futures) {
+            return qty;
+        }
         let safe_price = Qty::scale_or_one(price);
 
         let (base_qty, quote_qty) = match raw_qty_unit {
@@ -270,6 +273,9 @@ impl QtyNormalization {
     }
 
     pub fn normalize(self, qty: f64, price: f64) -> f64 {
+        if matches!(self.market_kind, MarketKind::Futures) {
+            return qty;
+        }
         if let Some(raw_qty_unit) = self.raw_qty_unit {
             return self.normalize_with_raw_unit(qty, price, raw_qty_unit);
         }

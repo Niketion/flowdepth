@@ -114,6 +114,7 @@ async fn connect_and_subscribe(
             MarketKind::Spot => "spot",
             MarketKind::LinearPerps => "linear",
             MarketKind::InversePerps => "inverse",
+            MarketKind::Futures => unreachable!("Bybit does not support Rithmic futures"),
         }
     );
 
@@ -475,6 +476,7 @@ pub fn connect_depth_stream(
                 Timeframe::MS300 => "1000",
                 _ => "200",
             },
+            MarketKind::Futures => unreachable!("Bybit does not support Rithmic futures"),
         }
     } else {
         "200"

@@ -631,6 +631,16 @@ fn saved_state_from_config(state: data::State) -> SavedState {
         network.server_auth_token = data::config::auth::load_server_token(url);
     }
 
+    if network.rithmic.enabled
+        && network.rithmic.user.is_none()
+        && network.rithmic.password.is_none()
+        && let Some((user, password)) =
+            data::config::auth::load_rithmic_credentials(&network.rithmic.url)
+    {
+        network.rithmic.user = Some(user);
+        network.rithmic.password = Some(password);
+    }
+
     crate::connector::fetcher::set_trade_fetch_mode(network.trade_fetch_mode.clone());
     exchange::unit::qty::set_preferred_currency(state.size_in_quote_ccy);
 
