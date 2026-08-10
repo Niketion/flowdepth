@@ -11,7 +11,7 @@ use exchange::{
         deribit::{DeribitError, DeribitOptionsClient},
         derive::{DeriveMakerTrade, DeriveOptionInstrument, DeriveOptionsClient},
         gex_monitor::{GexMonitorClient, GexProxyHistoryPoint, GexProxyHistoryResponse},
-        quantwheel::{QuantWheelError, QuantWheelGexClient, QuantWheelGexSnapshot},
+        quantwheel::{QuantWheelGexClient, QuantWheelGexSnapshot, QuantWheelQuota},
     },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -31,6 +31,13 @@ pub const QUANTWHEEL_REFRESH_MS: u64 = 5 * 60 * 1_000;
 pub const DERIVE_INSTRUMENT_REFRESH_MS: u64 = 10 * 60 * 1_000;
 pub const DERIVE_TRADE_REFRESH_MS: u64 = 5 * 1_000;
 pub const DERIVE_INITIAL_BACKFILL_MS: u64 = 2 * 60 * 60 * 1_000;
+
+#[derive(Debug, Clone)]
+pub struct QuantWheelFetchCompletion {
+    pub result: Result<QuantWheelGexSnapshot, Arc<str>>,
+    pub quota: Option<QuantWheelQuota>,
+    pub rate_limited: bool,
+}
 pub const DERIVE_FETCH_OVERLAP_MS: u64 = 10 * 1_000;
 pub const DERIVE_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
 const FAILURE_BACKOFF_BASE_MS: u64 = 5_000;
@@ -178,6 +185,7 @@ pub struct GexDataCoordinator {
     quantwheel_in_flight: bool,
     quantwheel_failure: Option<FailureState>,
     quantwheel_force_refresh: bool,
+    quantwheel_quota: Option<QuantWheelQuota>,
     proxy_history: FxHashMap<OptionsUnderlying, Vec<Arc<GexProxyHistoryPoint>>>,
     proxy_loaded: FxHashSet<OptionsUnderlying>,
     proxy_in_flight: FxHashSet<OptionsUnderlying>,
@@ -229,6 +237,7 @@ impl GexDataCoordinator {
             quantwheel_in_flight: false,
             quantwheel_failure: None,
             quantwheel_force_refresh: false,
+            quantwheel_quota: None,
             proxy_history: FxHashMap::default(),
             proxy_loaded: FxHashSet::default(),
             proxy_in_flight: FxHashSet::default(),
@@ -339,6 +348,12 @@ impl GexDataCoordinator {
             return false;
         }
         if self
+            .quantwheel_quota
+            .is_some_and(|quota| quota.remaining == Some(0) && now < quota.reset_at)
+        {
+            return false;
+        }
+        if self
             .quantwheel_failure
             .as_ref()
             .is_some_and(|failure| now < failure.retry_after)
@@ -363,8 +378,34 @@ impl GexDataCoordinator {
         result: Result<QuantWheelGexSnapshot, Arc<str>>,
         now: UnixMs,
     ) {
+        self.complete_quantwheel_with_metadata(result, None, false, now);
+    }
+
+    pub fn complete_quantwheel_fetch(
+        &mut self,
+        completion: QuantWheelFetchCompletion,
+        now: UnixMs,
+    ) {
+        self.complete_quantwheel_with_metadata(
+            completion.result,
+            completion.quota,
+            completion.rate_limited,
+            now,
+        );
+    }
+
+    fn complete_quantwheel_with_metadata(
+        &mut self,
+        result: Result<QuantWheelGexSnapshot, Arc<str>>,
+        quota: Option<QuantWheelQuota>,
+        rate_limited: bool,
+        now: UnixMs,
+    ) {
         self.quantwheel_in_flight = false;
         self.quantwheel_force_refresh = false;
+        if let Some(quota) = quota {
+            self.quantwheel_quota = Some(quota);
+        }
         match result {
             Ok(source) => {
                 let source = Arc::new(quantwheel_snapshot(source, now));
@@ -388,19 +429,29 @@ impl GexDataCoordinator {
                     .quantwheel_failure
                     .as_ref()
                     .map_or(1, |failure| failure.attempts.saturating_add(1));
-                let delay = FAILURE_BACKOFF_BASE_MS
+                let backoff_delay = FAILURE_BACKOFF_BASE_MS
                     .saturating_mul(1u64 << attempts.saturating_sub(1).min(8))
                     .min(FAILURE_BACKOFF_MAX_MS);
+                let retry_after = if rate_limited {
+                    quota.map_or_else(|| now.saturating_add(backoff_delay), |quota| quota.reset_at)
+                } else {
+                    now.saturating_add(backoff_delay)
+                };
+                let delay = retry_after.saturating_diff(now);
                 log::warn!(
                     "GEX FetchFailed kind=snapshot underlying=GLD provider=QuantWheel attempt={attempts} backoff_ms={delay} error={error}"
                 );
                 self.quantwheel_failure = Some(FailureState {
                     attempts,
-                    retry_after: now.saturating_add(delay),
+                    retry_after,
                     last_error: error,
                 });
             }
         }
+    }
+
+    pub fn quantwheel_quota(&self) -> Option<QuantWheelQuota> {
+        self.quantwheel_quota
     }
 
     pub fn mapped_quantwheel(
@@ -1449,13 +1500,19 @@ pub async fn execute_proxy_fetch(
     (underlying, result)
 }
 
-pub async fn execute_quantwheel_fetch(
-    client: QuantWheelGexClient,
-) -> Result<QuantWheelGexSnapshot, Arc<str>> {
-    client
-        .fetch_gex()
-        .await
-        .map_err(|error: QuantWheelError| Arc::from(error.to_string()))
+pub async fn execute_quantwheel_fetch(client: QuantWheelGexClient) -> QuantWheelFetchCompletion {
+    match client.fetch_gex().await {
+        Ok(response) => QuantWheelFetchCompletion {
+            result: Ok(response.snapshot),
+            quota: Some(response.quota),
+            rate_limited: false,
+        },
+        Err(error) => QuantWheelFetchCompletion {
+            quota: error.quota(),
+            rate_limited: error.is_rate_limited(),
+            result: Err(Arc::from(error.to_string())),
+        },
+    }
 }
 
 pub async fn execute_derive_instruments_fetch(
@@ -1712,6 +1769,32 @@ mod tests {
             value.quantwheel_freshness(now.saturating_add(QUANTWHEEL_REFRESH_MS)),
             GexFreshness::Error
         );
+    }
+
+    #[test]
+    fn anonymous_quota_blocks_retries_until_the_daily_reset() {
+        let now = UnixMs::new(1_800_000_000_000);
+        let reset_at = now.saturating_add(6 * 60 * 60 * 1_000);
+        let mut value = coordinator();
+        value.set_consumers([GexSource::xaut_gld()]);
+        assert!(value.due_quantwheel_fetch(now, true));
+        value.complete_quantwheel_fetch(
+            QuantWheelFetchCompletion {
+                result: Err("daily limit reached".into()),
+                quota: Some(QuantWheelQuota {
+                    limit: 5,
+                    remaining: Some(0),
+                    reset_at,
+                    reset_is_estimate: true,
+                }),
+                rate_limited: true,
+            },
+            now,
+        );
+
+        assert_eq!(value.quantwheel_quota().unwrap().used(), Some(5));
+        assert!(!value.due_quantwheel_fetch(now.saturating_add(5 * 60 * 60 * 1_000), true));
+        assert!(value.due_quantwheel_fetch(reset_at, true));
     }
 
     #[test]

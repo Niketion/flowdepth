@@ -348,6 +348,7 @@ impl Dashboard {
                                 let freshness = coordinator.freshness(underlying, now);
                                 let error = coordinator.last_error(underlying).map(Arc::from);
                                 chart.set_snapshot(snapshot, freshness, error);
+                                chart.set_quantwheel_quota(None);
                                 let flow = coordinator.derive_flow(underlying, chart.config(), now);
                                 chart.set_derive_flow(flow);
                             }
@@ -369,6 +370,7 @@ impl Dashboard {
                                     coordinator.quantwheel_freshness(now),
                                     coordinator.quantwheel_error().map(Arc::from),
                                 );
+                                chart.set_quantwheel_quota(coordinator.quantwheel_quota());
                                 chart.set_derive_flow(None);
                             }
                             _ => {}

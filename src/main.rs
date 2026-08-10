@@ -289,9 +289,7 @@ enum Message {
     },
     Tick(std::time::Instant),
     GexFetchCompleted(connector::gex::GexFetchResult),
-    QuantWheelGexFetchCompleted(
-        Result<exchange::options::quantwheel::QuantWheelGexSnapshot, Arc<str>>,
-    ),
+    QuantWheelGexFetchCompleted(connector::gex::QuantWheelFetchCompletion),
     DeriveInstrumentsFetchCompleted(connector::gex::DeriveInstrumentsFetchResult),
     DeriveTradesFetchCompleted(connector::gex::DeriveTradesFetchResult),
     GexProxyFetchCompleted(
@@ -1252,7 +1250,7 @@ impl Flowsurface {
             }
             Message::QuantWheelGexFetchCompleted(result) => {
                 let now = exchange::UnixMs::now();
-                self.gex_coordinator.complete_quantwheel(result, now);
+                self.gex_coordinator.complete_quantwheel_fetch(result, now);
                 self.sync_gex_dashboard(now);
                 return Task::none();
             }

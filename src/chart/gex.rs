@@ -62,6 +62,7 @@ pub struct GexChart {
     last_depth: Option<(Depth, UnixMs)>,
     last_liquidity_recalculation: Option<Instant>,
     logged_depth_state: Option<LiquidityDepthState>,
+    quantwheel_quota: Option<exchange::options::quantwheel::QuantWheelQuota>,
 }
 
 impl GexChart {
@@ -88,6 +89,7 @@ impl GexChart {
             last_depth: None,
             last_liquidity_recalculation: None,
             logged_depth_state: None,
+            quantwheel_quota: None,
         }
     }
 
@@ -105,6 +107,7 @@ impl GexChart {
             self.liquidity_metrics = None;
             self.last_depth = None;
             self.last_liquidity_recalculation = None;
+            self.quantwheel_quota = None;
             self.auto_fit();
         }
     }
@@ -149,6 +152,17 @@ impl GexChart {
 
     pub fn error(&self) -> Option<&str> {
         self.error.as_deref()
+    }
+
+    pub fn quantwheel_quota(&self) -> Option<exchange::options::quantwheel::QuantWheelQuota> {
+        self.quantwheel_quota
+    }
+
+    pub fn set_quantwheel_quota(
+        &mut self,
+        quota: Option<exchange::options::quantwheel::QuantWheelQuota>,
+    ) {
+        self.quantwheel_quota = quota;
     }
 
     pub fn config(&self) -> &Config {

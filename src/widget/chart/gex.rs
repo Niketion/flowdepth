@@ -36,12 +36,23 @@ impl GexLayoutDensity {
 
 fn view_sized(chart: &gex::GexChart, density: GexLayoutDensity) -> Element<'_, gex::Message> {
     let Some(snapshot) = chart.snapshot() else {
-        return iced::widget::center(text(if chart.freshness() == GexFreshness::Error {
+        let status = text(if chart.freshness() == GexFreshness::Error {
             "GEX data unavailable."
         } else {
             "Waiting for GEX data..."
-        }))
-        .into();
+        });
+        let mut content = column![status]
+            .spacing(12)
+            .align_x(Alignment::Center)
+            .width(Length::Fill);
+        if chart.quantwheel_quota().is_some() {
+            content = content.push(
+                container(quantwheel_quota_card(chart, density))
+                    .width(Length::Fixed(420.0))
+                    .style(card_style),
+            );
+        }
+        return iced::widget::center(content).into();
     };
     let visible = chart.visible_strikes();
     if visible.is_empty() {
@@ -301,7 +312,7 @@ fn analytics_section<'a>(
 }
 
 fn analytics_view<'a>(
-    chart: &gex::GexChart,
+    chart: &'a gex::GexChart,
     snapshot: &data::chart::gex::GexSnapshot,
     density: GexLayoutDensity,
 ) -> Element<'a, gex::Message> {
@@ -391,10 +402,78 @@ fn analytics_view<'a>(
     if cfg.show_gamma_liquidity_panel {
         sections.push(liquidity_card(chart, &expiry, density));
     }
+    if is_proxy && chart.quantwheel_quota().is_some() {
+        sections.push(quantwheel_quota_card(chart, density));
+    }
     if !is_proxy {
         sections.push(agreement_card(chart, snapshot, &expiry, density));
     }
     cards_layout(sections, density)
+}
+
+fn quantwheel_quota_card(
+    chart: &gex::GexChart,
+    density: GexLayoutDensity,
+) -> Element<'_, gex::Message> {
+    let quota = chart
+        .quantwheel_quota()
+        .expect("quota card requires QuantWheel quota state");
+    let used = quota.used();
+    let remaining = quota.remaining;
+    let exhausted = remaining == Some(0);
+    let status = match remaining {
+        Some(0) => "Limit reached".to_owned(),
+        Some(value) => format!("{value} left"),
+        None => "Usage unknown".to_owned(),
+    };
+    let primary = used.map_or_else(
+        || format!("— / {} fetches used", quota.limit),
+        |value| format!("{value} / {} fetches used", quota.limit),
+    );
+    let secondary = if exhausted {
+        let remaining_ms = quota.reset_at.saturating_diff(exchange::UnixMs::now());
+        let estimate = if quota.reset_is_estimate {
+            "estimated UTC reset"
+        } else {
+            "provider reset"
+        };
+        format!(
+            "Available again in {} · {estimate}",
+            format_countdown(remaining_ms)
+        )
+    } else {
+        "Anonymous QuantWheel daily allowance".to_owned()
+    };
+    analytics_section(
+        "QuantWheel free tier",
+        GaugeVisual {
+            asset: include_bytes!("../../../assets/gex/liquidity-impact-gauge.svg"),
+            normalized: used.map(|value| f32::from(value) / f32::from(quota.limit.max(1))),
+            muted: used.is_none(),
+        },
+        status,
+        if exhausted {
+            Semantic::Danger
+        } else {
+            Semantic::Primary
+        },
+        primary,
+        secondary,
+        "QuantWheel documents 5 anonymous results per feature per day. The API reports remaining usage through x-ratelimit-remaining. It does not currently return a reset timestamp, so the displayed reset falls back to the next 00:00 UTC and is marked as estimated.".to_owned(),
+        None,
+        density,
+    )
+}
+
+fn format_countdown(milliseconds: u64) -> String {
+    let total_minutes = milliseconds.saturating_add(59_999) / 60_000;
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
+    if hours > 0 {
+        format!("{hours}h {minutes:02}m")
+    } else {
+        format!("{minutes}m")
+    }
 }
 
 fn agreement_card<'a>(

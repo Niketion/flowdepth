@@ -1,7 +1,7 @@
 use super::{OptionsProvider, OptionsUnderlying};
 use crate::{UnixMs, adapter};
 use chrono::{NaiveDate, Utc};
-use reqwest::Client;
+use reqwest::{Client, header::HeaderMap};
 use serde::Deserialize;
 use std::time::Duration;
 use thiserror::Error;
@@ -9,6 +9,64 @@ use thiserror::Error;
 const PRODUCTION_BASE_URL: &str = "https://quantwheel.com/api/tools/gex";
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// QuantWheel's public pricing and GEX pages advertise five anonymous results
+/// per feature, with the remaining calculation count resetting daily.
+pub const ANONYMOUS_DAILY_GEX_LIMIT: u16 = 5;
+const DAY_MS: u64 = 24 * 60 * 60 * 1_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuantWheelQuota {
+    pub limit: u16,
+    pub remaining: Option<u16>,
+    pub reset_at: UnixMs,
+    pub reset_is_estimate: bool,
+}
+
+impl QuantWheelQuota {
+    pub fn used(self) -> Option<u16> {
+        self.remaining
+            .map(|remaining| self.limit.saturating_sub(remaining.min(self.limit)))
+    }
+
+    fn from_headers(headers: &HeaderMap, now: UnixMs) -> Self {
+        let remaining = header_u64(headers, "x-ratelimit-remaining")
+            .and_then(|value| u16::try_from(value).ok());
+        let explicit_reset = header_u64(headers, "x-ratelimit-reset").map(|value| {
+            // Rate-limit reset headers conventionally use epoch seconds. Accept
+            // epoch milliseconds too so the client remains robust if that changes.
+            UnixMs::new(if value < 10_000_000_000 {
+                value.saturating_mul(1_000)
+            } else {
+                value
+            })
+        });
+        let retry_after = header_u64(headers, "retry-after")
+            .map(|seconds| now.saturating_add(seconds.saturating_mul(1_000)));
+        let reset_at = explicit_reset
+            .or(retry_after)
+            .unwrap_or_else(|| next_utc_midnight(now));
+        Self {
+            limit: ANONYMOUS_DAILY_GEX_LIMIT,
+            remaining,
+            reset_at,
+            reset_is_estimate: explicit_reset.is_none() && retry_after.is_none(),
+        }
+    }
+}
+
+fn header_u64(headers: &HeaderMap, name: &str) -> Option<u64> {
+    headers.get(name)?.to_str().ok()?.parse().ok()
+}
+
+fn next_utc_midnight(now: UnixMs) -> UnixMs {
+    UnixMs::new(
+        now.as_u64()
+            .checked_div(DAY_MS)
+            .unwrap_or(0)
+            .saturating_add(1)
+            .saturating_mul(DAY_MS),
+    )
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantWheelConfig {
@@ -34,13 +92,36 @@ pub enum QuantWheelError {
     #[error("QuantWheel HTTP request failed: {0}")]
     Request(#[source] reqwest::Error),
     #[error("QuantWheel returned HTTP {status}: {message}")]
-    Http { status: u16, message: String },
+    Http {
+        status: u16,
+        message: String,
+        quota: QuantWheelQuota,
+    },
     #[error("invalid QuantWheel JSON response: {0}")]
     Decode(#[source] serde_json::Error),
     #[error("QuantWheel returned no GEX levels")]
     EmptySnapshot,
     #[error("QuantWheel returned invalid {field}: {value}")]
     InvalidNumber { field: &'static str, value: f64 },
+}
+
+impl QuantWheelError {
+    pub fn quota(&self) -> Option<QuantWheelQuota> {
+        match self {
+            Self::Http { quota, .. } => Some(*quota),
+            _ => None,
+        }
+    }
+
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, Self::Http { status: 429, .. })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuantWheelGexResponse {
+    pub snapshot: QuantWheelGexSnapshot,
+    pub quota: QuantWheelQuota,
 }
 
 #[derive(Debug, Clone)]
@@ -73,7 +154,7 @@ impl QuantWheelGexClient {
         })
     }
 
-    pub async fn fetch_gex(&self) -> Result<QuantWheelGexSnapshot, QuantWheelError> {
+    pub async fn fetch_gex(&self) -> Result<QuantWheelGexResponse, QuantWheelError> {
         log::info!("GEX FetchStarted kind=snapshot underlying=GLD provider=QuantWheel");
         let response = self
             .client
@@ -88,11 +169,16 @@ impl QuantWheelGexClient {
             .await
             .map_err(QuantWheelError::Request)?;
         let status = response.status();
+        let mut quota = QuantWheelQuota::from_headers(response.headers(), UnixMs::now());
+        if status.as_u16() == 429 && quota.remaining.is_none() {
+            quota.remaining = Some(0);
+        }
         let body = response.text().await.map_err(QuantWheelError::Request)?;
         if !status.is_success() {
             return Err(QuantWheelError::Http {
                 status: status.as_u16(),
                 message: body.chars().take(256).collect(),
+                quota,
             });
         }
         let dto: QuantWheelResponseDto =
@@ -103,7 +189,7 @@ impl QuantWheelGexClient {
             snapshot.levels.len(),
             snapshot.observed_at
         );
-        Ok(snapshot)
+        Ok(QuantWheelGexResponse { snapshot, quota })
     }
 }
 
@@ -352,7 +438,7 @@ mod tests {
             assert!(request.contains("deltaRange=0.97"));
             assert!(request.contains("formula=nominal"));
             let response = format!(
-                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nX-RateLimit-Remaining: 3\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             stream.write_all(response.as_bytes()).expect("response");
@@ -371,8 +457,12 @@ mod tests {
     async fn fetch_uses_configured_expiration_and_typed_response() {
         let (url, server) = serve_once("200 OK", RESPONSE);
         let client = QuantWheelGexClient::with_base_url(url, test_config(), None).expect("client");
-        let snapshot = client.fetch_gex().await.expect("snapshot");
-        assert_eq!(snapshot.levels[0].strike, 400.0);
+        let response = client.fetch_gex().await.expect("snapshot");
+        assert_eq!(response.snapshot.levels[0].strike, 400.0);
+        assert_eq!(response.quota.limit, 5);
+        assert_eq!(response.quota.remaining, Some(3));
+        assert_eq!(response.quota.used(), Some(2));
+        assert!(response.quota.reset_is_estimate);
         server.join().expect("server");
     }
 
@@ -393,5 +483,15 @@ mod tests {
             Err(QuantWheelError::Decode(_))
         ));
         server.join().expect("server");
+    }
+
+    #[test]
+    fn estimated_daily_reset_is_next_utc_midnight() {
+        let now = UnixMs::new(1_800_000_012_345);
+        let quota = QuantWheelQuota::from_headers(&HeaderMap::new(), now);
+        assert_eq!(quota.reset_at.as_u64() % DAY_MS, 0);
+        assert!(quota.reset_at > now);
+        assert!(quota.reset_at.saturating_diff(now) <= DAY_MS);
+        assert!(quota.reset_is_estimate);
     }
 }
