@@ -6,6 +6,7 @@
 pub mod deribit;
 pub mod derive;
 pub mod gex_monitor;
+pub mod quantwheel;
 
 use crate::{Ticker, UnixMs};
 use serde::{Deserialize, Serialize};
@@ -14,12 +15,14 @@ use std::sync::Arc;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub enum OptionsProvider {
     Deribit,
+    QuantWheel,
 }
 
 impl std::fmt::Display for OptionsProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Deribit => f.write_str("Deribit"),
+            Self::QuantWheel => f.write_str("QuantWheel"),
         }
     }
 }
@@ -28,6 +31,7 @@ impl std::fmt::Display for OptionsProvider {
 pub enum OptionsUnderlying {
     Btc,
     Eth,
+    Gld,
 }
 
 impl OptionsUnderlying {
@@ -37,7 +41,65 @@ impl OptionsUnderlying {
         match self {
             Self::Btc => "BTC",
             Self::Eth => "ETH",
+            Self::Gld => "GLD",
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GexPriceMapping {
+    SpotRatio,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum GexSource {
+    Native {
+        provider: OptionsProvider,
+        underlying: OptionsUnderlying,
+    },
+    Proxy {
+        provider: OptionsProvider,
+        source_symbol: OptionsUnderlying,
+        target_symbol: &'static str,
+        price_mapping: GexPriceMapping,
+    },
+}
+
+impl GexSource {
+    pub const fn deribit(underlying: OptionsUnderlying) -> Self {
+        Self::Native {
+            provider: OptionsProvider::Deribit,
+            underlying,
+        }
+    }
+
+    pub const fn xaut_gld() -> Self {
+        Self::Proxy {
+            provider: OptionsProvider::QuantWheel,
+            source_symbol: OptionsUnderlying::Gld,
+            target_symbol: "XAUT",
+            price_mapping: GexPriceMapping::SpotRatio,
+        }
+    }
+
+    pub const fn source_underlying(self) -> OptionsUnderlying {
+        match self {
+            Self::Native { underlying, .. } => underlying,
+            Self::Proxy { source_symbol, .. } => source_symbol,
+        }
+    }
+
+    pub const fn for_chart_underlying(underlying: OptionsUnderlying) -> Self {
+        match underlying {
+            OptionsUnderlying::Gld => Self::xaut_gld(),
+            OptionsUnderlying::Btc | OptionsUnderlying::Eth => Self::deribit(underlying),
+        }
+    }
+}
+
+impl From<OptionsUnderlying> for GexSource {
+    fn from(value: OptionsUnderlying) -> Self {
+        Self::deribit(value)
     }
 }
 
@@ -132,6 +194,16 @@ pub fn resolve_options_underlying(ticker: Ticker) -> Option<OptionsUnderlying> {
     resolve_symbol(&symbol)
 }
 
+/// Resolve a chart market to the options/GEX source that should supply it.
+pub fn resolve_gex_source(ticker: Ticker) -> Option<GexSource> {
+    let (symbol, _) = ticker.display_symbol_and_type();
+    if is_xaut_symbol(&symbol) {
+        Some(GexSource::xaut_gld())
+    } else {
+        resolve_symbol(&symbol).map(GexSource::deribit)
+    }
+}
+
 fn resolve_symbol(symbol: &str) -> Option<OptionsUnderlying> {
     let normalized = symbol.to_ascii_uppercase();
     const BTC: &[&str] = &["BTCUSD", "BTCUSDT", "BTCUSDC"];
@@ -150,6 +222,16 @@ fn resolve_symbol(symbol: &str) -> Option<OptionsUnderlying> {
     } else {
         None
     }
+}
+
+fn is_xaut_symbol(symbol: &str) -> bool {
+    let normalized = symbol.to_ascii_uppercase();
+    let normalized = normalized
+        .strip_suffix("-PERP")
+        .or_else(|| normalized.strip_suffix("_PERP"))
+        .or_else(|| normalized.strip_suffix("PERP"))
+        .unwrap_or(&normalized);
+    ["XAUTUSD", "XAUTUSDT", "XAUTUSDC"].contains(&normalized)
 }
 
 #[cfg(test)]
@@ -193,6 +275,24 @@ mod tests {
         );
         assert_eq!(
             resolve_options_underlying(ticker("BTC2LUSDT", Exchange::BinanceSpot)),
+            None
+        );
+    }
+
+    #[test]
+    fn gex_source_resolves_xaut_independently_of_exchange() {
+        for exchange in [Exchange::BinanceLinear, Exchange::BybitLinear] {
+            assert_eq!(
+                resolve_gex_source(ticker("XAUTUSDT", exchange)),
+                Some(GexSource::xaut_gld())
+            );
+        }
+        assert_eq!(
+            resolve_gex_source(ticker("BTCUSDT", Exchange::BinanceLinear)),
+            Some(GexSource::deribit(OptionsUnderlying::Btc))
+        );
+        assert_eq!(
+            resolve_gex_source(ticker("SOLUSDT", Exchange::BinanceLinear)),
             None
         );
     }

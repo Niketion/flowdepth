@@ -62,10 +62,10 @@ fn matches_options_filter(
     underlying_filter: Option<exchange::options::OptionsUnderlying>,
     supported_options_only: bool,
 ) -> bool {
-    let resolved = exchange::options::resolve_options_underlying(ticker);
+    let resolved = exchange::options::resolve_gex_source(ticker);
     underlying_filter.map_or_else(
         || !supported_options_only || resolved.is_some(),
-        |underlying| resolved == Some(underlying),
+        |underlying| resolved.is_some_and(|source| source.source_underlying() == underlying),
     )
 }
 
@@ -1914,6 +1914,7 @@ mod options_filter_tests {
     fn gex_selector_only_accepts_supported_underlyings() {
         assert!(matches_options_filter(ticker("BTCUSDT"), None, true));
         assert!(matches_options_filter(ticker("ETHUSDT"), None, true));
+        assert!(matches_options_filter(ticker("XAUTUSDT"), None, true));
         assert!(!matches_options_filter(ticker("SOLUSDT"), None, true));
         assert!(matches_options_filter(
             ticker("BTCUSDT"),
@@ -1923,6 +1924,16 @@ mod options_filter_tests {
         assert!(!matches_options_filter(
             ticker("ETHUSDT"),
             Some(OptionsUnderlying::Btc),
+            false
+        ));
+        assert!(matches_options_filter(
+            ticker("XAUTUSDT"),
+            Some(OptionsUnderlying::Gld),
+            false
+        ));
+        assert!(!matches_options_filter(
+            ticker("BTCUSDT"),
+            Some(OptionsUnderlying::Gld),
             false
         ));
     }

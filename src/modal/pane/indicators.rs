@@ -750,9 +750,9 @@ pub fn view_kline<'a>(
             pane::Content::Kline { chart: Some(chart), .. } if chart.gex_proxy_available()
         );
         let provider_status = if proxy_available {
-            "24h proxy history: GEX Monitor · Live profile: Deribit"
+            "24h proxy history: GEX Monitor, Live profile: Deribit"
         } else {
-            "Live profile: Deribit · Local history only"
+            "Live profile: Deribit, Local history only"
         };
         let update = move |next: GexLevelsConfig| config_message(pane, cfg.with_gex_levels(next));
         let toggle =

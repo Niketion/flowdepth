@@ -5,6 +5,7 @@ use exchange::{
         RawOptionChainSnapshot, RawOptionContractSnapshot,
         derive::{DeriveMakerSide, DeriveMakerTrade},
         gex_monitor::GexProxyHistoryPoint,
+        quantwheel::QuantWheelGexSnapshot,
     },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -481,6 +482,14 @@ pub struct GexScenarioPoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct GexProxyMetadata {
+    pub source_symbol: String,
+    pub target_symbol: String,
+    pub source_spot: f64,
+    pub target_spot: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct GexSnapshot {
     pub provider: OptionsProvider,
     pub underlying: OptionsUnderlying,
@@ -510,6 +519,8 @@ pub struct GexSnapshot {
     pub scenario_curve: Arc<[GexScenarioPoint]>,
     #[serde(default)]
     pub scale_p95: f64,
+    #[serde(default)]
+    pub proxy: Option<GexProxyMetadata>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -818,6 +829,199 @@ impl GexSnapshot {
                     && point.net_gex_1pct.is_finite()
                     && point.absolute_gex_1pct.is_finite()
             })
+            && self.proxy.as_ref().is_none_or(|proxy| {
+                !proxy.source_symbol.is_empty()
+                    && !proxy.target_symbol.is_empty()
+                    && proxy.source_spot.is_finite()
+                    && proxy.source_spot > 0.0
+                    && proxy.target_spot.is_finite()
+                    && proxy.target_spot > 0.0
+            })
+    }
+}
+
+pub fn map_proxy_price(source_price: f64, source_spot: f64, target_spot: f64) -> Option<f64> {
+    if !source_price.is_finite()
+        || !source_spot.is_finite()
+        || source_spot <= 0.0
+        || !target_spot.is_finite()
+        || target_spot <= 0.0
+    {
+        return None;
+    }
+    let mapped = source_price * (target_spot / source_spot);
+    (mapped.is_finite() && mapped > 0.0).then_some(mapped)
+}
+
+pub fn map_proxy_snapshot(
+    source: &GexSnapshot,
+    source_symbol: &str,
+    target_symbol: &str,
+    target_spot: f64,
+) -> Option<GexSnapshot> {
+    let source_spot = source.source_spot;
+    let map = |price| map_proxy_price(price, source_spot, target_spot);
+    let mut mapped = source.clone();
+    mapped.source_spot = target_spot;
+    mapped.call_wall = match source.call_wall {
+        Some(price) => Some(map(price)?),
+        None => None,
+    };
+    mapped.put_wall = match source.put_wall {
+        Some(price) => Some(map(price)?),
+        None => None,
+    };
+    mapped.gamma_flip = match source.gamma_flip {
+        Some(price) => Some(map(price)?),
+        None => None,
+    };
+    mapped.strikes = source
+        .strikes
+        .iter()
+        .cloned()
+        .map(|mut strike| {
+            strike.strike = map(strike.strike)?;
+            Some(strike)
+        })
+        .collect::<Option<Vec<_>>>()?
+        .into();
+    mapped.expiry_strikes = source
+        .expiry_strikes
+        .iter()
+        .cloned()
+        .map(|mut strike| {
+            strike.strike = map(strike.strike)?;
+            Some(strike)
+        })
+        .collect::<Option<Vec<_>>>()?
+        .into();
+    mapped.scenario_curve = source
+        .scenario_curve
+        .iter()
+        .cloned()
+        .map(|mut point| {
+            point.price = map(point.price)?;
+            Some(point)
+        })
+        .collect::<Option<Vec<_>>>()?
+        .into();
+    mapped.proxy = Some(GexProxyMetadata {
+        source_symbol: source_symbol.to_owned(),
+        target_symbol: target_symbol.to_owned(),
+        source_spot,
+        target_spot,
+    });
+    Some(mapped)
+}
+
+pub fn quantwheel_snapshot(source: QuantWheelGexSnapshot, calculated_at: UnixMs) -> GexSnapshot {
+    let strikes = source
+        .levels
+        .iter()
+        .map(|level| GexStrike {
+            strike: level.strike,
+            call_gex_1pct: level.call_gex,
+            put_gex_1pct: -level.put_gex.abs(),
+            net_gex_1pct: level.net_gex,
+            absolute_gamma_1pct: level.call_gex.abs() + level.put_gex.abs(),
+            call_open_interest: level.call_open_interest,
+            put_open_interest: level.put_open_interest,
+            expiration_count: 1,
+            gamma_provenance: GexGammaProvenance::Native,
+        })
+        .collect::<Vec<_>>();
+    let absolute_gex_1pct = strikes
+        .iter()
+        .map(|strike| strike.absolute_gamma_1pct)
+        .sum();
+    let scale_p95 =
+        gex_percentile_95(strikes.iter().map(|strike| strike.net_gex_1pct.abs())).unwrap_or(0.0);
+    GexSnapshot {
+        provider: source.provider,
+        underlying: source.underlying,
+        model: GexSignModel::CallPutOiProxy,
+        expiry_filter: GexExpiryFilter::All,
+        gamma_source: GexGammaSource::ProviderNativePreferred,
+        gamma_provenance: GexGammaProvenance::Native,
+        source_spot: source.stock_price,
+        observed_at: source.observed_at,
+        calculated_at,
+        net_gex_1pct: Some(source.total_gex),
+        absolute_gex_1pct,
+        call_wall: source.call_wall.map(|wall| wall.strike),
+        put_wall: source.put_wall.map(|wall| wall.strike),
+        gamma_flip: source.gamma_inflection,
+        intrinsic_stress: IntrinsicStressMetrics::default(),
+        gamma_vega: GammaVegaMetrics::default(),
+        strikes: strikes.into(),
+        expiry_strikes: Arc::default(),
+        scenario_curve: Arc::default(),
+        scale_p95,
+        proxy: None,
+    }
+}
+
+#[cfg(test)]
+mod proxy_mapping_tests {
+    use super::*;
+
+    fn snapshot() -> GexSnapshot {
+        GexSnapshot {
+            provider: OptionsProvider::QuantWheel,
+            underlying: OptionsUnderlying::Gld,
+            model: GexSignModel::CallPutOiProxy,
+            expiry_filter: GexExpiryFilter::All,
+            gamma_source: GexGammaSource::ProviderNativePreferred,
+            gamma_provenance: GexGammaProvenance::Native,
+            source_spot: 400.0,
+            observed_at: UnixMs::new(1),
+            calculated_at: UnixMs::new(1),
+            net_gex_1pct: Some(9_689.0),
+            absolute_gex_1pct: 10_000.0,
+            call_wall: Some(410.0),
+            put_wall: None,
+            gamma_flip: None,
+            intrinsic_stress: Default::default(),
+            gamma_vega: Default::default(),
+            strikes: Arc::from([GexStrike {
+                strike: 405.0,
+                call_gex_1pct: 11_413.0,
+                put_gex_1pct: -1_724.0,
+                net_gex_1pct: 9_689.0,
+                absolute_gamma_1pct: 13_137.0,
+                call_open_interest: 2_075.0,
+                put_open_interest: 254.0,
+                expiration_count: 1,
+                gamma_provenance: GexGammaProvenance::Native,
+            }]),
+            expiry_strikes: Arc::default(),
+            scenario_curve: Arc::default(),
+            scale_p95: 9_689.0,
+            proxy: None,
+        }
+    }
+
+    #[test]
+    fn maps_gld_price_coordinates_and_preserves_gex_magnitudes() {
+        assert_eq!(map_proxy_price(405.0, 400.0, 4_000.0), Some(4_050.0));
+        let mapped =
+            map_proxy_snapshot(&snapshot(), "GLD", "XAUTUSDT", 4_000.0).expect("valid mapping");
+        assert_eq!(mapped.strikes[0].strike, 4_050.0);
+        assert_eq!(mapped.call_wall, Some(4_100.0));
+        assert_eq!(mapped.put_wall, None);
+        assert_eq!(mapped.gamma_flip, None);
+        assert_eq!(mapped.strikes[0].net_gex_1pct, 9_689.0);
+        assert_eq!(mapped.net_gex_1pct, Some(9_689.0));
+        assert_eq!(mapped.proxy.as_ref().unwrap().source_spot, 400.0);
+    }
+
+    #[test]
+    fn rejects_zero_or_invalid_source_spot() {
+        assert_eq!(map_proxy_price(405.0, 0.0, 4_000.0), None);
+        assert_eq!(map_proxy_price(405.0, f64::NAN, 4_000.0), None);
+        let mut invalid = snapshot();
+        invalid.source_spot = 0.0;
+        assert!(map_proxy_snapshot(&invalid, "GLD", "XAUTUSDT", 4_000.0).is_none());
     }
 }
 
@@ -1136,6 +1340,7 @@ pub fn calculate_gex_at(
         expiry_strikes: expiry_strikes.into(),
         scenario_curve: scenario_curve.into(),
         scale_p95,
+        proxy: None,
     }
 }
 
@@ -2861,6 +3066,7 @@ mod tests {
             expiry_strikes: Arc::from([]),
             scenario_curve: Arc::from([]),
             scale_p95: 1.0,
+            proxy: None,
         })
     }
 

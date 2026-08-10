@@ -1600,6 +1600,15 @@ impl KlineChart {
         self.visual_config
     }
 
+    pub fn current_market_price(&self) -> Option<f64> {
+        let price = match &self.data_source {
+            PlotData::TimeBased(timeseries) => timeseries.latest_kline().map(|kline| kline.close),
+            PlotData::TickBased(ticks) => ticks.latest_dp().map(|(point, _)| point.kline.close),
+        }?;
+        let price = price.to_f64();
+        (price.is_finite() && price > 0.0).then_some(price)
+    }
+
     pub fn indicator_enabled(&self, indicator: KlineIndicator) -> bool {
         self.indicators[indicator].is_some()
     }
@@ -1630,6 +1639,11 @@ impl KlineChart {
     ) {
         let unchanged = self.gex_snapshot.as_ref().map(|value| value.observed_at)
             == snapshot.as_ref().map(|value| value.observed_at)
+            && self
+                .gex_snapshot
+                .as_ref()
+                .map(|value| value.source_spot.to_bits())
+                == snapshot.as_ref().map(|value| value.source_spot.to_bits())
             && self.gex_history.len() == history.len()
             && self.gex_history.last().map(|value| value.observed_at)
                 == history.last().map(|value| value.observed_at)
@@ -3178,8 +3192,28 @@ fn draw_gex_zone_tooltip(
                 zone.dominant_expiry
                     .map_or_else(|| "n/a".to_owned(), |value| value.as_u64().to_string())
             ),
-            format!("Deribit OI Proxy / {}", zone.gamma_provenance),
+            format!(
+                "{} OI Proxy / {}",
+                history
+                    .last()
+                    .map_or(exchange::options::OptionsProvider::Deribit, |snapshot| {
+                        snapshot.provider
+                    }),
+                zone.gamma_provenance
+            ),
         ]);
+    }
+    if let Some(proxy) = history.last().and_then(|snapshot| snapshot.proxy.as_ref()) {
+        lines.splice(
+            0..0,
+            [
+                format!("GEX {} Proxy", proxy.source_symbol),
+                format!("Target: {}", proxy.target_symbol),
+                format!("Source: {} Options", proxy.source_symbol),
+                "Provider: QuantWheel".to_owned(),
+                "Mapping: Spot ratio".to_owned(),
+            ],
+        );
     }
     let width = 300.0;
     let height = 12.0 + lines.len() as f32 * 16.0;
@@ -3596,6 +3630,19 @@ fn draw_gex_overlay_foreground(
         chart_scaling,
         palette,
     );
+    if let Some(proxy) = &snapshot.proxy {
+        draw_gex_level_label(
+            frame,
+            &format!("GEX {} Proxy", proxy.source_symbol),
+            Point::new(
+                visible_region.x + gex_screen_width_to_world(8.0, chart_scaling),
+                visible_region.y + gex_screen_width_to_world(12.0, chart_scaling),
+            ),
+            palette.primary.strong.color,
+            chart_scaling,
+            palette,
+        );
+    }
 }
 
 fn cached_gex_zone_frames(
@@ -3607,6 +3654,9 @@ fn cached_gex_zone_frames(
     let key = history
         .last()
         .map_or(0, |snapshot| snapshot.observed_at.as_u64())
+        ^ history
+            .last()
+            .map_or(0, |snapshot| snapshot.source_spot.to_bits().rotate_left(3))
         ^ (history.len() as u64).rotate_left(7)
         ^ bucket_ms.rotate_left(17)
         ^ u64::from(config.minimum_zone_strength.to_bits()).rotate_left(49)
@@ -7294,6 +7344,7 @@ mod tests {
                 absolute_gex_1pct: 1.0,
             }]),
             scale_p95: 1.0,
+            proxy: None,
         })
     }
 

@@ -1026,8 +1026,8 @@ impl canvas::Program<Message> for HeatmapChart {
                                 palette.background.weakest.color.scale_alpha(0.96),
                             );
                             let title = match event.side {
-                                IcebergSide::PossibleBuy => "Possible Buy Iceberg · Binance",
-                                IcebergSide::PossibleSell => "Possible Sell Iceberg · Binance",
+                                IcebergSide::PossibleBuy => "Possible Buy Iceberg Binance",
+                                IcebergSide::PossibleSell => "Possible Sell Iceberg Binance",
                             };
                             let aggressive = match event.side {
                                 IcebergSide::PossibleBuy => "Aggressive sells",

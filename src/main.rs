@@ -156,6 +156,7 @@ struct Flowsurface {
     debug_terminal_compact_mode: bool,
     gex_coordinator: connector::gex::GexDataCoordinator,
     deribit_options_client: Option<exchange::options::deribit::DeribitOptionsClient>,
+    quantwheel_gex_client: Option<exchange::options::quantwheel::QuantWheelGexClient>,
     derive_options_client: Option<exchange::options::derive::DeriveOptionsClient>,
     gex_monitor_client: Option<exchange::options::gex_monitor::GexMonitorClient>,
     startup_loading: StartupLoading,
@@ -288,6 +289,9 @@ enum Message {
     },
     Tick(std::time::Instant),
     GexFetchCompleted(connector::gex::GexFetchResult),
+    QuantWheelGexFetchCompleted(
+        Result<exchange::options::quantwheel::QuantWheelGexSnapshot, Arc<str>>,
+    ),
     DeriveInstrumentsFetchCompleted(connector::gex::DeriveInstrumentsFetchResult),
     DeriveTradesFetchCompleted(connector::gex::DeriveTradesFetchResult),
     GexProxyFetchCompleted(
@@ -731,6 +735,14 @@ impl Flowsurface {
             error
         })
         .ok();
+        let quantwheel_gex_client = exchange::options::quantwheel::QuantWheelGexClient::new(
+            saved_state.network.proxy.as_ref(),
+        )
+        .map_err(|error| {
+            log::error!("QuantWheel GEX client initialization failed: {error}");
+            error
+        })
+        .ok();
         let gex_monitor_client = exchange::options::gex_monitor::GexMonitorClient::new(
             saved_state.network.proxy.as_ref(),
         )
@@ -796,6 +808,7 @@ impl Flowsurface {
             debug_terminal_compact_mode: true,
             gex_coordinator: connector::gex::GexDataCoordinator::default(),
             deribit_options_client,
+            quantwheel_gex_client,
             derive_options_client,
             gex_monitor_client,
             startup_loading: StartupLoading::new(),
@@ -1159,6 +1172,16 @@ impl Flowsurface {
                 } else {
                     Vec::new()
                 };
+                let quantwheel_tasks = if let Some(client) = self.quantwheel_gex_client.clone()
+                    && self.gex_coordinator.due_quantwheel_fetch(gex_now, true)
+                {
+                    vec![Task::perform(
+                        connector::gex::execute_quantwheel_fetch(client),
+                        Message::QuantWheelGexFetchCompleted,
+                    )]
+                } else {
+                    Vec::new()
+                };
                 let derive_instrument_tasks =
                     if let Some(client) = self.derive_options_client.clone() {
                         self.gex_coordinator
@@ -1215,6 +1238,7 @@ impl Flowsurface {
                         .into_iter()
                         .chain(gex_tasks)
                         .chain(proxy_tasks)
+                        .chain(quantwheel_tasks)
                         .chain(derive_instrument_tasks)
                         .chain(derive_trade_tasks)
                         .collect::<Vec<_>>(),
@@ -1223,6 +1247,12 @@ impl Flowsurface {
             Message::GexFetchCompleted(completion) => {
                 let now = exchange::UnixMs::now();
                 self.gex_coordinator.complete(completion, now);
+                self.sync_gex_dashboard(now);
+                return Task::none();
+            }
+            Message::QuantWheelGexFetchCompleted(result) => {
+                let now = exchange::UnixMs::now();
+                self.gex_coordinator.complete_quantwheel(result, now);
                 self.sync_gex_dashboard(now);
                 return Task::none();
             }

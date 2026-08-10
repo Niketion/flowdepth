@@ -172,7 +172,8 @@ fn resolve_gex_liquidity_reference(
     candidates: &[(Option<data::layout::pane::LinkGroup>, TickerInfo)],
 ) -> Result<(TickerInfo, pane::GexLiquidityReferenceSource), GexReferenceMissingReason> {
     let compatible = |ticker: TickerInfo| {
-        exchange::options::resolve_options_underlying(ticker.ticker) == Some(underlying)
+        exchange::options::resolve_gex_source(ticker.ticker)
+            .is_some_and(|source| source.source_underlying() == underlying)
     };
     let unique = |tickers: Vec<TickerInfo>| {
         let mut compatible_tickers = Vec::new();
@@ -284,7 +285,7 @@ impl Dashboard {
         changed
     }
 
-    pub fn gex_consumers(&self) -> Vec<exchange::options::OptionsUnderlying> {
+    pub fn gex_consumers(&self) -> Vec<exchange::options::GexSource> {
         self.panes
             .iter()
             .map(|(_, state)| state)
@@ -299,13 +300,15 @@ impl Dashboard {
                     chart: Some(_),
                     unsupported: false,
                     ..
-                } => Some(*underlying),
+                } => Some(exchange::options::GexSource::for_chart_underlying(
+                    *underlying,
+                )),
                 pane::Content::Kline { indicators, .. }
                     if indicators.contains(&data::chart::indicator::KlineIndicator::GexLevels) =>
                 {
-                    state.stream_pair().and_then(|ticker| {
-                        exchange::options::resolve_options_underlying(ticker.ticker)
-                    })
+                    state
+                        .stream_pair()
+                        .and_then(|ticker| exchange::options::resolve_gex_source(ticker.ticker))
                 }
                 _ => None,
             })
@@ -320,9 +323,9 @@ impl Dashboard {
         let sync =
             |state: &mut pane::State,
              coordinator: &mut crate::connector::gex::GexDataCoordinator| {
-                let market_underlying = state.stream_pair().and_then(|ticker| {
-                    exchange::options::resolve_options_underlying(ticker.ticker)
-                });
+                let market = state.stream_pair();
+                let market_source =
+                    market.and_then(|ticker| exchange::options::resolve_gex_source(ticker.ticker));
                 match &mut state.content {
                     pane::Content::Gex {
                         chart,
@@ -336,12 +339,40 @@ impl Dashboard {
                         let Some(chart) = chart else {
                             return;
                         };
-                        let snapshot = coordinator.derived(*underlying, chart.config(), now);
-                        let freshness = coordinator.freshness(*underlying, now);
-                        let error = coordinator.last_error(*underlying).map(Arc::from);
-                        chart.set_snapshot(snapshot, freshness, error);
-                        let flow = coordinator.derive_flow(*underlying, chart.config(), now);
-                        chart.set_derive_flow(flow);
+                        match exchange::options::GexSource::for_chart_underlying(*underlying) {
+                            exchange::options::GexSource::Native {
+                                provider: exchange::options::OptionsProvider::Deribit,
+                                underlying,
+                            } => {
+                                let snapshot = coordinator.derived(underlying, chart.config(), now);
+                                let freshness = coordinator.freshness(underlying, now);
+                                let error = coordinator.last_error(underlying).map(Arc::from);
+                                chart.set_snapshot(snapshot, freshness, error);
+                                let flow = coordinator.derive_flow(underlying, chart.config(), now);
+                                chart.set_derive_flow(flow);
+                            }
+                            exchange::options::GexSource::Proxy {
+                                provider: exchange::options::OptionsProvider::QuantWheel,
+                                source_symbol: exchange::options::OptionsUnderlying::Gld,
+                                target_symbol,
+                                price_mapping: exchange::options::GexPriceMapping::SpotRatio,
+                            } => {
+                                let target = chart
+                                    .liquidity_reference()
+                                    .map(|ticker| ticker.ticker.display_symbol_and_type().0)
+                                    .unwrap_or_else(|| target_symbol.to_owned());
+                                let snapshot = chart.proxy_target_spot().and_then(|target_spot| {
+                                    coordinator.mapped_quantwheel(&target, target_spot)
+                                });
+                                chart.set_snapshot(
+                                    snapshot,
+                                    coordinator.quantwheel_freshness(now),
+                                    coordinator.quantwheel_error().map(Arc::from),
+                                );
+                                chart.set_derive_flow(None);
+                            }
+                            _ => {}
+                        }
                     }
                     pane::Content::Kline {
                         chart: Some(chart),
@@ -363,7 +394,7 @@ impl Dashboard {
                             );
                             return;
                         }
-                        let Some(underlying) = market_underlying else {
+                        let Some(source) = market_source else {
                             chart.set_gex_overlay_data(
                                 None,
                                 Vec::new(),
@@ -388,18 +419,88 @@ impl Dashboard {
                             min_absolute_gex: levels.minimum_absolute_gex,
                             ..data::chart::gex::Config::default()
                         };
-                        let history =
-                            coordinator.history(underlying, &config, levels.history_minutes, now);
-                        let snapshot = coordinator
-                            .derived(underlying, &config, now)
-                            .or_else(|| history.last().cloned());
-                        let freshness = coordinator.freshness(underlying, now);
-                        let error = coordinator.last_error(underlying).map(Arc::from);
-                        let proxy_history = coordinator.proxy_history(underlying, now);
-                        let proxy_freshness = coordinator.proxy_freshness(underlying, now);
-                        let proxy_error = coordinator.proxy_error(underlying).map(Arc::from);
-                        let derive_flow = coordinator.derive_flow(underlying, &config, now);
-                        let derive_freshness = coordinator.derive_freshness(underlying, now);
+                        let (
+                            snapshot,
+                            history,
+                            freshness,
+                            error,
+                            proxy_history,
+                            proxy_freshness,
+                            proxy_error,
+                            derive_flow,
+                            derive_freshness,
+                        ) = match source {
+                            exchange::options::GexSource::Native {
+                                provider: exchange::options::OptionsProvider::Deribit,
+                                underlying,
+                            } => {
+                                let history = coordinator.history(
+                                    underlying,
+                                    &config,
+                                    levels.history_minutes,
+                                    now,
+                                );
+                                let snapshot = coordinator
+                                    .derived(underlying, &config, now)
+                                    .or_else(|| history.last().cloned());
+                                (
+                                    snapshot,
+                                    history,
+                                    coordinator.freshness(underlying, now),
+                                    coordinator.last_error(underlying).map(Arc::from),
+                                    coordinator.proxy_history(underlying, now),
+                                    coordinator.proxy_freshness(underlying, now),
+                                    coordinator.proxy_error(underlying).map(Arc::from),
+                                    coordinator.derive_flow(underlying, &config, now),
+                                    coordinator.derive_freshness(underlying, now),
+                                )
+                            }
+                            exchange::options::GexSource::Proxy {
+                                provider: exchange::options::OptionsProvider::QuantWheel,
+                                source_symbol: exchange::options::OptionsUnderlying::Gld,
+                                target_symbol,
+                                price_mapping: exchange::options::GexPriceMapping::SpotRatio,
+                            } => {
+                                let Some(target_spot) = chart.current_market_price() else {
+                                    chart.set_gex_overlay_data(
+                                        None,
+                                        Vec::new(),
+                                        data::chart::gex::GexFreshness::Loading,
+                                        None,
+                                        Vec::new(),
+                                        data::chart::gex::GexFreshness::Loading,
+                                        None,
+                                        None,
+                                        data::chart::gex::GexFreshness::Loading,
+                                    );
+                                    return;
+                                };
+                                let target = market
+                                    .map(|ticker| ticker.ticker.display_symbol_and_type().0)
+                                    .unwrap_or_else(|| target_symbol.to_owned());
+                                let history = coordinator.mapped_quantwheel_history(
+                                    &target,
+                                    target_spot,
+                                    levels.history_minutes,
+                                    now,
+                                );
+                                let snapshot = coordinator
+                                    .mapped_quantwheel(&target, target_spot)
+                                    .or_else(|| history.last().cloned());
+                                (
+                                    snapshot,
+                                    history,
+                                    coordinator.quantwheel_freshness(now),
+                                    coordinator.quantwheel_error().map(Arc::from),
+                                    Vec::new(),
+                                    data::chart::gex::GexFreshness::Loading,
+                                    None,
+                                    None,
+                                    data::chart::gex::GexFreshness::Loading,
+                                )
+                            }
+                            _ => return,
+                        };
                         chart.set_gex_overlay_data(
                             snapshot,
                             history,
@@ -1394,7 +1495,7 @@ impl Dashboard {
 
         let compatible_ticker = inherited_ticker.filter(|ticker| {
             content_kind != ContentKind::GexChart
-                || exchange::options::resolve_options_underlying(ticker.ticker).is_some()
+                || exchange::options::resolve_gex_source(ticker.ticker).is_some()
         });
         if let Some(ticker) = compatible_ticker {
             return self.init_pane(

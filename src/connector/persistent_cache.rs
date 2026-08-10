@@ -232,6 +232,7 @@ impl From<LegacyGexSnapshotV1> for GexSnapshot {
                 .into(),
             scenario_curve: value.scenario_curve,
             scale_p95: value.scale_p95,
+            proxy: None,
         }
     }
 }
@@ -1806,6 +1807,7 @@ mod tests {
                 absolute_gex_1pct: 1.0,
             }]),
             scale_p95: 1.0,
+            proxy: None,
         }
     }
 

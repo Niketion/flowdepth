@@ -47,7 +47,10 @@ use exchange::{
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme, padding,
-    widget::{button, center, column, container, pane_grid, responsive, row, rule, text, tooltip},
+    widget::{
+        button, center, column, container, pane_grid, pick_list, responsive, row, rule, text,
+        tooltip,
+    },
 };
 use std::time::Instant;
 
@@ -126,8 +129,46 @@ pub enum Event {
     StreamModifierChanged(modal::stream::Message),
     ComparisonChartInteraction(super::chart::comparison::Message),
     GexChartInteraction(crate::chart::gex::Message),
+    GexAssetSelected(GexChartAsset),
     HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
     MiniTickersListInteraction(modal::pane::mini_tickers_list::Message),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GexChartAsset {
+    Btc,
+    Eth,
+    Xau,
+}
+
+impl GexChartAsset {
+    const ALL: [Self; 3] = [Self::Btc, Self::Eth, Self::Xau];
+
+    const fn underlying(self) -> exchange::options::OptionsUnderlying {
+        match self {
+            Self::Btc => exchange::options::OptionsUnderlying::Btc,
+            Self::Eth => exchange::options::OptionsUnderlying::Eth,
+            Self::Xau => exchange::options::OptionsUnderlying::Gld,
+        }
+    }
+
+    const fn from_underlying(value: exchange::options::OptionsUnderlying) -> Self {
+        match value {
+            exchange::options::OptionsUnderlying::Btc => Self::Btc,
+            exchange::options::OptionsUnderlying::Eth => Self::Eth,
+            exchange::options::OptionsUnderlying::Gld => Self::Xau,
+        }
+    }
+}
+
+impl std::fmt::Display for GexChartAsset {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Btc => "BTC",
+            Self::Eth => "ETH",
+            Self::Xau => "XAU",
+        })
+    }
 }
 
 pub struct State {
@@ -248,7 +289,8 @@ impl State {
             .as_ref()
             .map_or((false, *liquidity_reference), |chart| {
                 (
-                    chart.config().show_gamma_liquidity_panel,
+                    chart.config().show_gamma_liquidity_panel
+                        || chart.underlying() == exchange::options::OptionsUnderlying::Gld,
                     chart.liquidity_reference().or(*liquidity_reference),
                 )
             });
@@ -365,14 +407,16 @@ impl State {
                     .or(*liquidity_reference),
                 _ => None,
             };
-            let resolved = exchange::options::resolve_options_underlying(base_ticker.ticker);
+            let resolved = exchange::options::resolve_gex_source(base_ticker.ticker);
             if resolved.is_none() {
                 log::warn!(
                     "GEX UnsupportedUnderlying symbol={}",
                     base_ticker.ticker.display_symbol_and_type().0
                 );
             }
-            let underlying = resolved.unwrap_or(exchange::options::OptionsUnderlying::Btc);
+            let underlying = resolved
+                .map(exchange::options::GexSource::source_underlying)
+                .unwrap_or(exchange::options::OptionsUnderlying::Btc);
             let config = self
                 .settings
                 .visual_config
@@ -384,10 +428,15 @@ impl State {
             {
                 Some(base_ticker)
             } else {
-                existing_reference.or(Some(base_ticker))
+                existing_reference
+                    .filter(|reference| {
+                        exchange::options::resolve_gex_source(reference.ticker)
+                            .is_some_and(|source| source.source_underlying() == underlying)
+                    })
+                    .or(Some(base_ticker))
             };
             self.content = Content::Gex {
-                chart: resolved.map(|value| GexChart::new(value, config, liquidity_reference)),
+                chart: resolved.map(|_| GexChart::new(underlying, config, liquidity_reference)),
                 underlying,
                 liquidity_reference,
                 liquidity_reference_source: liquidity_reference
@@ -883,19 +932,26 @@ impl State {
         };
 
         if let Content::Gex { underlying, .. } = &self.content {
-            let content = text(format!("{underlying} GEX · Deribit"))
-                .size(crate::style::text_size::SECTION)
-                .align_y(Alignment::Center);
+            let provider = if *underlying == exchange::options::OptionsUnderlying::Gld {
+                "GLD Proxy QuantWheel"
+            } else {
+                "Deribit"
+            };
             top_left_buttons = top_left_buttons.push(
-                button(content)
-                    .on_press(Message::PaneEvent(
-                        id,
-                        Event::ShowModal(
-                            Modal::MiniTickersList(MiniPanel::for_supported_options()),
-                        ),
-                    ))
-                    .style(|theme, status| style::button::modifier(theme, status, true))
-                    .height(widget::PANE_CONTROL_BTN_HEIGHT),
+                row![
+                    pick_list(
+                        GexChartAsset::ALL,
+                        Some(GexChartAsset::from_underlying(*underlying)),
+                        move |asset| Message::PaneEvent(id, Event::GexAssetSelected(asset)),
+                    )
+                    .text_size(crate::style::text_size::SECTION)
+                    .width(Length::Fixed(82.0)),
+                    text(provider)
+                        .size(crate::style::text_size::SMALL)
+                        .align_y(Alignment::Center),
+                ]
+                .spacing(6)
+                .align_y(Alignment::Center),
             );
         } else if let Some(kind) = self.stream_pair_kind() {
             let (base_ti, extra) = match kind {
@@ -1116,7 +1172,7 @@ impl State {
             } => {
                 if *unsupported {
                     let base = center(text(
-                        "GEX options data is currently available only for BTC and ETH.",
+                        "GEX data is currently available for BTC, ETH, and XAUT via GLD proxy.",
                     ))
                     .into();
                     self.compose_stack_view(
@@ -1633,16 +1689,25 @@ impl State {
                 self.modal = None;
             }
             Event::ContentSelected(kind) => {
+                if kind == ContentKind::GexChart {
+                    let underlying = exchange::options::OptionsUnderlying::Btc;
+                    self.content = Content::Gex {
+                        chart: Some(GexChart::new(underlying, None, None)),
+                        underlying,
+                        liquidity_reference: None,
+                        liquidity_reference_source: None,
+                        unsupported: false,
+                    };
+                    self.settings.visual_config = None;
+                    self.streams = ResolvedStream::Ready(Vec::new());
+                    return None;
+                }
                 self.content = Content::placeholder(kind);
                 self.settings.visual_config = None;
 
                 if !matches!(kind, ContentKind::Starter) {
                     self.streams = ResolvedStream::waiting(vec![]);
-                    let mini_panel = if kind == ContentKind::GexChart {
-                        MiniPanel::for_supported_options()
-                    } else {
-                        MiniPanel::new()
-                    };
+                    let mini_panel = MiniPanel::new();
                     let modal = Modal::MiniTickersList(mini_panel);
 
                     if let Some(effect) = self.show_modal_with_focus(modal) {
@@ -1689,6 +1754,37 @@ impl State {
                 } = &mut self.content
                 {
                     chart.update(message);
+                }
+            }
+            Event::GexAssetSelected(asset) => {
+                let next = asset.underlying();
+                if let Content::Gex {
+                    chart,
+                    underlying,
+                    liquidity_reference,
+                    liquidity_reference_source,
+                    unsupported,
+                } = &mut self.content
+                {
+                    if *underlying == next {
+                        return None;
+                    }
+                    let compatible_reference = liquidity_reference.filter(|reference| {
+                        exchange::options::resolve_gex_source(reference.ticker)
+                            .is_some_and(|source| source.source_underlying() == next)
+                    });
+                    *underlying = next;
+                    *unsupported = false;
+                    *liquidity_reference = compatible_reference;
+                    if compatible_reference.is_none() {
+                        *liquidity_reference_source = None;
+                    }
+                    if let Some(chart) = chart {
+                        chart.set_underlying(next);
+                        chart.set_liquidity_reference(compatible_reference);
+                    }
+                    self.reconcile_gex_liquidity_stream();
+                    return Some(Effect::RefreshStreams);
                 }
             }
             Event::PanelInteraction(msg) => match &mut self.content {
@@ -2026,8 +2122,10 @@ impl State {
                         let compatible =
                             self.gex_liquidity_resolution()
                                 .is_some_and(|(underlying, ..)| {
-                                    exchange::options::resolve_options_underlying(ticker.ticker)
-                                        == Some(underlying)
+                                    exchange::options::resolve_gex_source(ticker.ticker)
+                                        .is_some_and(|source| {
+                                            source.source_underlying() == underlying
+                                        })
                                 });
                         if compatible {
                             self.modal = None;
@@ -3334,5 +3432,104 @@ mod tests {
         assert!(!depth_streams.contains(&old));
         state.reconcile_gex_liquidity_stream();
         assert_eq!(state.streams.ready_iter().expect("ready").count(), 1);
+    }
+
+    #[test]
+    fn xaut_proxy_keeps_target_spot_depth_stream_when_liquidity_panel_is_hidden() {
+        let reference = TickerInfo::new(
+            Ticker::new("XAUTUSDT", Exchange::BybitLinear),
+            0.01,
+            0.001,
+            None,
+        );
+        let config = data::chart::gex::Config {
+            show_gamma_liquidity_panel: false,
+            ..data::chart::gex::Config::default()
+        };
+        let mut state = State::from_config(
+            Content::Gex {
+                chart: Some(GexChart::new(
+                    exchange::options::OptionsUnderlying::Gld,
+                    Some(config),
+                    Some(reference),
+                )),
+                underlying: exchange::options::OptionsUnderlying::Gld,
+                liquidity_reference: Some(reference),
+                liquidity_reference_source: Some(GexLiquidityReferenceSource::Persisted),
+                unsupported: false,
+            },
+            Vec::new(),
+            Settings::default(),
+            None,
+        );
+        state.reconcile_gex_liquidity_stream();
+        let depth_references = state
+            .streams
+            .ready_iter()
+            .expect("ready")
+            .filter_map(|stream| match stream {
+                StreamKind::Depth { ticker_info, .. } => Some(*ticker_info),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(depth_references, [reference]);
+    }
+
+    #[test]
+    fn dedicated_gex_chart_can_switch_from_btc_to_xaut_proxy() {
+        let mut state = gex_state(data::chart::gex::Config::default());
+        let xaut = TickerInfo::new(
+            Ticker::new("XAUTUSDT", Exchange::BybitLinear),
+            0.01,
+            0.001,
+            None,
+        );
+        state.set_content_and_streams(vec![xaut], ContentKind::GexChart);
+        let Content::Gex {
+            chart,
+            underlying,
+            liquidity_reference,
+            unsupported,
+            ..
+        } = &state.content
+        else {
+            panic!("GEX content");
+        };
+        assert_eq!(*underlying, exchange::options::OptionsUnderlying::Gld);
+        assert_eq!(*liquidity_reference, Some(xaut));
+        assert_eq!(
+            chart.as_ref().and_then(GexChart::liquidity_reference),
+            Some(xaut)
+        );
+        assert!(!unsupported);
+    }
+
+    #[test]
+    fn gex_asset_selector_contains_only_btc_eth_and_xau() {
+        assert_eq!(
+            GexChartAsset::ALL.map(|asset| asset.to_string()),
+            ["BTC", "ETH", "XAU"]
+        );
+
+        let mut state = gex_state(data::chart::gex::Config::default());
+        assert!(matches!(
+            state.update(Event::GexAssetSelected(GexChartAsset::Xau)),
+            Some(Effect::RefreshStreams)
+        ));
+        let Content::Gex {
+            chart,
+            underlying,
+            liquidity_reference,
+            ..
+        } = &state.content
+        else {
+            panic!("GEX content");
+        };
+        assert_eq!(*underlying, exchange::options::OptionsUnderlying::Gld);
+        assert_eq!(*liquidity_reference, None);
+        assert_eq!(
+            chart.as_ref().map(GexChart::underlying),
+            Some(exchange::options::OptionsUnderlying::Gld)
+        );
     }
 }

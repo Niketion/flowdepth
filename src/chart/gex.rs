@@ -181,6 +181,11 @@ impl GexChart {
         self.liquidity_reference
     }
 
+    pub fn proxy_target_spot(&self) -> Option<f64> {
+        let price = self.last_depth.as_ref()?.0.mid_price()?.to_f64();
+        (price.is_finite() && price > 0.0).then_some(price)
+    }
+
     pub fn set_liquidity_reference(&mut self, reference: Option<TickerInfo>) {
         if self.liquidity_reference == reference {
             return;
@@ -613,6 +618,7 @@ mod tests {
                 expiry_strikes: Arc::default(),
                 scenario_curve: Arc::default(),
                 scale_p95: 2.0,
+                proxy: None,
             })),
             GexFreshness::Fresh,
             None,
@@ -714,6 +720,15 @@ mod tests {
         );
         assert_eq!(metrics.gamma_exposure_usd, 0.0);
         assert_eq!(metrics.impact_ratio, 0.0);
+    }
+
+    #[test]
+    fn proxy_target_spot_uses_live_reference_depth_midpoint() {
+        let reference = ticker(Exchange::BybitLinear);
+        let mut chart = GexChart::new(OptionsUnderlying::Gld, None, Some(reference));
+        assert_eq!(chart.proxy_target_spot(), None);
+        chart.insert_depth(&depth(&[(3_999.0, 2.0)], &[(4_001.0, 3.0)]), UnixMs::now());
+        assert_eq!(chart.proxy_target_spot(), Some(4_000.0));
     }
 
     #[test]

@@ -84,7 +84,7 @@ impl OpenInterestIndicator {
         );
         let label = self.source_timeframe.map_or_else(
             || "Open Interest".to_string(),
-            |timeframe| format!("Open Interest · source {timeframe}"),
+            |timeframe| format!("Open Interest source {timeframe}"),
         );
         column![text(label).size(crate::style::text_size::TINY), plot].into()
     }

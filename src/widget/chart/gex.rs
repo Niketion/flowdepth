@@ -308,7 +308,8 @@ fn analytics_view<'a>(
     let cfg = chart.config();
     let expiry = cfg.expiry_filter.to_string();
     let mut sections = Vec::new();
-    if cfg.show_intrinsic_stress_panel {
+    let is_proxy = snapshot.proxy.is_some();
+    if cfg.show_intrinsic_stress_panel && !is_proxy {
         let metrics = &snapshot.intrinsic_stress;
         let semantic = match metrics.level {
             IntrinsicStressLevel::Low => Semantic::Success,
@@ -346,7 +347,7 @@ fn analytics_view<'a>(
             density,
         ));
     }
-    if cfg.show_gamma_vega_panel {
+    if cfg.show_gamma_vega_panel && !is_proxy {
         let metrics = &snapshot.gamma_vega;
         let semantic = match metrics.regime {
             GammaVegaRegime::VegaDominant => Semantic::Primary,
@@ -390,7 +391,9 @@ fn analytics_view<'a>(
     if cfg.show_gamma_liquidity_panel {
         sections.push(liquidity_card(chart, &expiry, density));
     }
-    sections.push(agreement_card(chart, snapshot, &expiry, density));
+    if !is_proxy {
+        sections.push(agreement_card(chart, snapshot, &expiry, density));
+    }
     cards_layout(sections, density)
 }
 
@@ -801,10 +804,17 @@ fn header_view<'a>(
     if cfg.show_header_expiry {
         push("Expiry", cfg.expiry_filter.to_string());
     }
+    if let Some(proxy) = &snapshot.proxy {
+        push(
+            "Source",
+            format!("{} QuantWheel proxy", proxy.source_symbol),
+        );
+        push("Target", proxy.target_symbol.clone());
+    }
     if cfg.show_header_freshness {
         push("●", status.into());
     }
-    if cfg.show_header_derive_flow {
+    if cfg.show_header_derive_flow && snapshot.proxy.is_none() {
         if let Some(flow) = chart.derive_flow() {
             let window = &flow.thirty_minutes;
             push(

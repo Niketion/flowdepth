@@ -1,16 +1,17 @@
 use data::chart::gex::{
     Config, DeriveMakerGammaFlow, GexExpiryFilter, GexFreshness, GexGammaSource,
     GexScenarioResolution, GexSignModel, GexSnapshot, calculate_derive_maker_gamma_flow,
-    calculate_gex_at,
+    calculate_gex_at, map_proxy_snapshot, quantwheel_snapshot,
 };
 use exchange::{
     UnixMs,
     options::{
-        OptionContractMatchKey, OptionInstrument, OptionsProvider, OptionsUnderlying,
+        GexSource, OptionContractMatchKey, OptionInstrument, OptionsProvider, OptionsUnderlying,
         RawOptionChainSnapshot,
         deribit::{DeribitError, DeribitOptionsClient},
         derive::{DeriveMakerTrade, DeriveOptionInstrument, DeriveOptionsClient},
         gex_monitor::{GexMonitorClient, GexProxyHistoryPoint, GexProxyHistoryResponse},
+        quantwheel::{QuantWheelError, QuantWheelGexClient, QuantWheelGexSnapshot},
     },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -26,6 +27,7 @@ pub const MARKET_SNAPSHOT_TTL_MS: u64 = 15 * 1_000;
 pub const FRESH_THRESHOLD_MS: u64 = 45 * 1_000;
 pub const EXPIRED_THRESHOLD_MS: u64 = 5 * 60 * 1_000;
 pub const PROXY_REFRESH_MS: u64 = 5 * 60 * 1_000;
+pub const QUANTWHEEL_REFRESH_MS: u64 = 5 * 60 * 1_000;
 pub const DERIVE_INSTRUMENT_REFRESH_MS: u64 = 10 * 60 * 1_000;
 pub const DERIVE_TRADE_REFRESH_MS: u64 = 5 * 1_000;
 pub const DERIVE_INITIAL_BACKFILL_MS: u64 = 2 * 60 * 60 * 1_000;
@@ -115,6 +117,12 @@ struct CachedGexSnapshot {
     value: Arc<GexSnapshot>,
 }
 
+#[derive(Debug, Clone)]
+struct CachedQuantWheelSnapshot {
+    value: Arc<GexSnapshot>,
+    received_at: UnixMs,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct DerivedGexKey {
     chain: OptionsChainKey,
@@ -163,6 +171,12 @@ pub struct GexDataCoordinator {
     subscribers: FxHashMap<OptionsChainKey, usize>,
     force_refresh: FxHashSet<OptionsChainKey>,
     last_freshness: FxHashMap<OptionsChainKey, GexFreshness>,
+    quantwheel_subscribers: usize,
+    quantwheel_snapshot: Option<CachedQuantWheelSnapshot>,
+    quantwheel_history: VecDeque<Arc<GexSnapshot>>,
+    quantwheel_in_flight: bool,
+    quantwheel_failure: Option<FailureState>,
+    quantwheel_force_refresh: bool,
     proxy_history: FxHashMap<OptionsUnderlying, Vec<Arc<GexProxyHistoryPoint>>>,
     proxy_loaded: FxHashSet<OptionsUnderlying>,
     proxy_in_flight: FxHashSet<OptionsUnderlying>,
@@ -208,6 +222,12 @@ impl GexDataCoordinator {
             subscribers: FxHashMap::default(),
             force_refresh: FxHashSet::default(),
             last_freshness: FxHashMap::default(),
+            quantwheel_subscribers: 0,
+            quantwheel_snapshot: None,
+            quantwheel_history: VecDeque::new(),
+            quantwheel_in_flight: false,
+            quantwheel_failure: None,
+            quantwheel_force_refresh: false,
             proxy_history: FxHashMap::default(),
             proxy_loaded: FxHashSet::default(),
             proxy_in_flight: FxHashSet::default(),
@@ -241,13 +261,28 @@ impl GexDataCoordinator {
 
     pub fn set_consumers<I>(&mut self, consumers: I)
     where
-        I: IntoIterator<Item = OptionsUnderlying>,
+        I: IntoIterator,
+        I::Item: Into<GexSource>,
     {
         let mut next = FxHashMap::default();
-        for underlying in consumers {
-            *next
-                .entry(OptionsChainKey::deribit(underlying))
-                .or_insert(0usize) += 1;
+        let mut quantwheel_subscribers = 0usize;
+        for source in consumers.into_iter().map(Into::into) {
+            match source {
+                GexSource::Native {
+                    provider: OptionsProvider::Deribit,
+                    underlying,
+                } => {
+                    *next
+                        .entry(OptionsChainKey::deribit(underlying))
+                        .or_insert(0usize) += 1;
+                }
+                GexSource::Proxy {
+                    provider: OptionsProvider::QuantWheel,
+                    source_symbol: OptionsUnderlying::Gld,
+                    ..
+                } => quantwheel_subscribers = quantwheel_subscribers.saturating_add(1),
+                _ => {}
+            }
         }
         for (&key, &count) in &next {
             if count > 0 && self.subscribers.get(&key).copied().unwrap_or(0) == 0 {
@@ -258,6 +293,10 @@ impl GexDataCoordinator {
                 self.derive_force_trades.insert(key.underlying);
             }
         }
+        if quantwheel_subscribers > 0 && self.quantwheel_subscribers == 0 {
+            self.quantwheel_force_refresh = true;
+        }
+        self.quantwheel_subscribers = quantwheel_subscribers;
         self.subscribers = next;
     }
 
@@ -289,6 +328,128 @@ impl GexDataCoordinator {
                 .iter()
                 .filter_map(|(&key, &count)| (count > 0).then_some(key.underlying)),
         );
+        if self.quantwheel_subscribers > 0 {
+            self.quantwheel_force_refresh = true;
+        }
+    }
+
+    pub fn due_quantwheel_fetch(&mut self, now: UnixMs, online: bool) -> bool {
+        if !online || self.quantwheel_subscribers == 0 || self.quantwheel_in_flight {
+            return false;
+        }
+        if self
+            .quantwheel_failure
+            .as_ref()
+            .is_some_and(|failure| now < failure.retry_after)
+            && !self.quantwheel_force_refresh
+        {
+            return false;
+        }
+        let expired = self
+            .quantwheel_snapshot
+            .as_ref()
+            .is_none_or(|cached| now.saturating_diff(cached.received_at) >= QUANTWHEEL_REFRESH_MS);
+        if expired || self.quantwheel_force_refresh {
+            self.quantwheel_in_flight = true;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn complete_quantwheel(
+        &mut self,
+        result: Result<QuantWheelGexSnapshot, Arc<str>>,
+        now: UnixMs,
+    ) {
+        self.quantwheel_in_flight = false;
+        self.quantwheel_force_refresh = false;
+        match result {
+            Ok(source) => {
+                let value = Arc::new(quantwheel_snapshot(source, now));
+                self.quantwheel_history.push_back(value.clone());
+                let cutoff = now.saturating_sub(24 * 60 * 60 * 1_000);
+                while self
+                    .quantwheel_history
+                    .front()
+                    .is_some_and(|snapshot| snapshot.observed_at < cutoff)
+                {
+                    self.quantwheel_history.pop_front();
+                }
+                self.quantwheel_snapshot = Some(CachedQuantWheelSnapshot {
+                    value,
+                    received_at: now,
+                });
+                self.quantwheel_failure = None;
+            }
+            Err(error) => {
+                let attempts = self
+                    .quantwheel_failure
+                    .as_ref()
+                    .map_or(1, |failure| failure.attempts.saturating_add(1));
+                let delay = FAILURE_BACKOFF_BASE_MS
+                    .saturating_mul(1u64 << attempts.saturating_sub(1).min(8))
+                    .min(FAILURE_BACKOFF_MAX_MS);
+                log::warn!(
+                    "GEX FetchFailed kind=snapshot underlying=GLD provider=QuantWheel attempt={attempts} backoff_ms={delay} error={error}"
+                );
+                self.quantwheel_failure = Some(FailureState {
+                    attempts,
+                    retry_after: now.saturating_add(delay),
+                    last_error: error,
+                });
+            }
+        }
+    }
+
+    pub fn mapped_quantwheel(
+        &self,
+        target_symbol: &str,
+        target_spot: f64,
+    ) -> Option<Arc<GexSnapshot>> {
+        self.quantwheel_snapshot.as_ref().and_then(|cached| {
+            map_proxy_snapshot(&cached.value, "GLD", target_symbol, target_spot).map(Arc::new)
+        })
+    }
+
+    pub fn mapped_quantwheel_history(
+        &self,
+        target_symbol: &str,
+        target_spot: f64,
+        retention_minutes: u16,
+        now: UnixMs,
+    ) -> Vec<Arc<GexSnapshot>> {
+        let cutoff = now
+            .saturating_sub(u64::from(retention_minutes.clamp(30, 24 * 60)).saturating_mul(60_000));
+        self.quantwheel_history
+            .iter()
+            .filter(|snapshot| snapshot.observed_at >= cutoff)
+            .filter_map(|snapshot| {
+                map_proxy_snapshot(snapshot, "GLD", target_symbol, target_spot).map(Arc::new)
+            })
+            .collect()
+    }
+
+    pub fn quantwheel_freshness(&self, now: UnixMs) -> GexFreshness {
+        if self.quantwheel_failure.is_some() {
+            GexFreshness::Error
+        } else if self.quantwheel_in_flight && self.quantwheel_snapshot.is_none() {
+            GexFreshness::Loading
+        } else if let Some(cached) = &self.quantwheel_snapshot {
+            if now.saturating_diff(cached.received_at) <= QUANTWHEEL_REFRESH_MS {
+                GexFreshness::Fresh
+            } else {
+                GexFreshness::Stale
+            }
+        } else {
+            GexFreshness::Loading
+        }
+    }
+
+    pub fn quantwheel_error(&self) -> Option<&str> {
+        self.quantwheel_failure
+            .as_ref()
+            .map(|failure| failure.last_error.as_ref())
     }
 
     pub fn due_proxy_fetches(&mut self, now: UnixMs, online: bool) -> Vec<OptionsUnderlying> {
@@ -1279,6 +1440,15 @@ pub async fn execute_proxy_fetch(
     (underlying, result)
 }
 
+pub async fn execute_quantwheel_fetch(
+    client: QuantWheelGexClient,
+) -> Result<QuantWheelGexSnapshot, Arc<str>> {
+    client
+        .fetch_gex()
+        .await
+        .map_err(|error: QuantWheelError| Arc::from(error.to_string()))
+}
+
 pub async fn execute_derive_instruments_fetch(
     client: DeriveOptionsClient,
     underlying: OptionsUnderlying,
@@ -1379,7 +1549,7 @@ mod tests {
         assert_eq!(value.subscriber_count(OptionsUnderlying::Btc), 2);
         assert_eq!(value.due_fetches(now, true).len(), 1);
         assert!(value.due_fetches(now, true).is_empty());
-        value.set_consumers([]);
+        value.set_consumers([] as [OptionsUnderlying; 0]);
         assert!(
             value
                 .due_fetches(now.saturating_add(INSTRUMENT_TTL_MS), true)
@@ -1407,6 +1577,68 @@ mod tests {
             value
                 .due_proxy_fetches(UnixMs::new(1_800_000_000_000), true)
                 .is_empty()
+        );
+    }
+
+    fn quantwheel_source(now: UnixMs) -> QuantWheelGexSnapshot {
+        QuantWheelGexSnapshot {
+            provider: OptionsProvider::QuantWheel,
+            underlying: OptionsUnderlying::Gld,
+            stock_price: 400.0,
+            total_gex: 9_689.0,
+            call_wall: None,
+            put_wall: None,
+            gamma_inflection: None,
+            levels: vec![exchange::options::quantwheel::QuantWheelGexLevel {
+                strike: 405.0,
+                call_gex: 11_413.0,
+                put_gex: 1_724.0,
+                net_gex: 9_689.0,
+                call_open_interest: 2_075.0,
+                put_open_interest: 254.0,
+                cumulative_gex: 14_047.0,
+            }],
+            observed_at: now,
+        }
+    }
+
+    #[test]
+    fn quantwheel_refresh_is_independent_from_realtime_mapping() {
+        let now = UnixMs::new(1_800_000_000_000);
+        let mut value = coordinator();
+        value.set_consumers([GexSource::xaut_gld()]);
+        assert!(value.due_quantwheel_fetch(now, true));
+        value.complete_quantwheel(Ok(quantwheel_source(now)), now);
+
+        let first = value
+            .mapped_quantwheel("XAUTUSDT", 4_000.0)
+            .expect("mapped snapshot");
+        let moved = value
+            .mapped_quantwheel("XAUTUSDT", 4_100.0)
+            .expect("remapped snapshot");
+        assert_eq!(first.strikes[0].strike, 4_050.0);
+        assert_eq!(moved.strikes[0].strike, 4_151.25);
+        assert_eq!(first.strikes[0].net_gex_1pct, moved.strikes[0].net_gex_1pct);
+        assert!(!value.due_quantwheel_fetch(now.saturating_add(1), true));
+        assert!(value.due_quantwheel_fetch(now.saturating_add(QUANTWHEEL_REFRESH_MS), true));
+    }
+
+    #[test]
+    fn quantwheel_failure_keeps_last_valid_snapshot() {
+        let now = UnixMs::new(1_800_000_000_000);
+        let mut value = coordinator();
+        value.set_consumers([GexSource::xaut_gld()]);
+        assert!(value.due_quantwheel_fetch(now, true));
+        value.complete_quantwheel(Ok(quantwheel_source(now)), now);
+        assert!(value.due_quantwheel_fetch(now.saturating_add(QUANTWHEEL_REFRESH_MS), true));
+        value.complete_quantwheel(
+            Err("remote unavailable".into()),
+            now.saturating_add(QUANTWHEEL_REFRESH_MS),
+        );
+        assert!(value.mapped_quantwheel("XAUTUSDT", 4_000.0).is_some());
+        assert_eq!(
+            value.quantwheel_freshness(now.saturating_add(QUANTWHEEL_REFRESH_MS)),
+            GexFreshness::Error
         );
     }
 
