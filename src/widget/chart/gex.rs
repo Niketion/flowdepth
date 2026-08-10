@@ -144,7 +144,7 @@ fn gauge_view<'a>(
         let base = svg(svg::Handle::from_memory(gauge.asset))
             .width(width)
             .height(fitted_height)
-            .opacity(if gauge.muted { 0.32 } else { 0.88 })
+            .opacity(if gauge.muted { 0.32_f32 } else { 0.88_f32 })
             .style(|theme: &Theme, _| svg::Style {
                 color: Some(theme.extended_palette().secondary.strong.color),
             });
@@ -691,7 +691,7 @@ fn zoom_button<'a>(
     let icon = svg(svg::Handle::from_memory(bytes))
         .width(15)
         .height(15)
-        .opacity(if enabled { 1.0 } else { 0.38 })
+        .opacity(if enabled { 1.0_f32 } else { 0.38_f32 })
         .style(|theme: &Theme, _| svg::Style {
             color: Some(theme.palette().text),
         });

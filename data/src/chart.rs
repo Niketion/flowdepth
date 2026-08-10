@@ -3,6 +3,7 @@ pub mod gex;
 pub mod heatmap;
 pub mod indicator;
 pub mod kline;
+pub mod ticks;
 
 use exchange::UnixMs;
 use exchange::{Timeframe, unit::Price};

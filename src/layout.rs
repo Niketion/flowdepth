@@ -47,6 +47,7 @@ pub struct SavedState {
     pub volume_size_unit: exchange::SizeUnit,
     pub network: data::Network,
     pub debug_terminal_enabled: bool,
+    pub cache_market_metadata: bool,
 }
 
 pub enum SavedStateLoadOutcome {
@@ -98,6 +99,7 @@ impl Default for SavedState {
             volume_size_unit: exchange::SizeUnit::Base,
             network: data::Network::default(),
             debug_terminal_enabled: false,
+            cache_market_metadata: false,
         }
     }
 }
@@ -653,6 +655,7 @@ fn saved_state_from_config(state: data::State) -> SavedState {
         volume_size_unit: state.size_in_quote_ccy,
         network,
         debug_terminal_enabled: state.debug_terminal_enabled,
+        cache_market_metadata: state.cache_market_metadata,
     }
 }
 

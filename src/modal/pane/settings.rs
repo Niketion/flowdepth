@@ -369,7 +369,7 @@ pub fn heatmap_cfg_view<'a>(
                     false,
                 )
             })
-            .step(0.05)
+            .step(0.05_f32)
             .into(),
             Some(
                 text(format!("{:.0}%", threshold_pct * 100.0))
@@ -667,7 +667,7 @@ pub fn timesales_cfg_view<'a>(
                 false,
             )
         })
-        .step(1.0);
+        .step(1.0_f32);
 
         classic_slider_row(
             text("Keep trades for"),
@@ -1089,7 +1089,7 @@ pub fn kline_cfg_view<'a>(
                             ),
                         )
                     })
-                    .step(0.05);
+                    .step(0.05_f32);
 
                     column![
                         picklist,
@@ -1220,7 +1220,7 @@ pub fn ladder_cfg_view<'a>(cfg: ladder::Config, pane: pane_grid::Pane) -> Elemen
                 false,
             )
         })
-        .step(1.0);
+        .step(1.0_f32);
 
         classic_slider_row(
             text("Keep trades for"),
@@ -1308,7 +1308,7 @@ pub mod study {
                             lookback: new_value as usize,
                         })
                     })
-                    .step(10.0);
+                    .step(10.0_f32);
 
                     column![text(format!("Lookback: {lookback} datapoints")), slider_ui]
                         .padding(8)
@@ -1331,7 +1331,7 @@ pub mod study {
                                     ignore_zeros,
                                 })
                             })
-                            .step(25.0);
+                            .step(25.0_f32);
 
                         column![info_text, threshold_slider,].padding(8).spacing(4)
                     };
@@ -1364,7 +1364,7 @@ pub mod study {
                                         ignore_zeros,
                                     })
                                 })
-                                .step(50.0)
+                                .step(50.0_f32)
                             ]
                             .spacing(2);
 
@@ -1449,7 +1449,7 @@ pub mod study {
                                 )))
                             },
                         )
-                        .step(40.0);
+                        .step(40.0_f32);
 
                         let switch_kind = button(text("Switch to visible range")).on_press(
                             on_change(HeatmapStudy::VolumeProfile(ProfileKind::VisibleRange)),

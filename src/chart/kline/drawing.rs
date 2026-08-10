@@ -1,5 +1,5 @@
 use super::KlineChart;
-use crate::chart::scale::AxisOverlayLabel;
+use crate::chart::ticks::AxisOverlayLabel;
 use crate::chart::{Chart, DrawingMessage, Interaction, Message};
 use crate::widget::color_picker::color_picker;
 use crate::widget::drag_handle;

@@ -31,6 +31,7 @@ pub struct State {
     pub network: Network,
     pub size_in_quote_ccy: exchange::SizeUnit,
     pub debug_terminal_enabled: bool,
+    pub cache_market_metadata: bool,
 }
 
 impl Default for State {
@@ -48,6 +49,7 @@ impl Default for State {
             network: Network::default(),
             size_in_quote_ccy: exchange::SizeUnit::Base,
             debug_terminal_enabled: false,
+            cache_market_metadata: false,
         }
     }
 }
@@ -65,6 +67,7 @@ impl State {
         network: Network,
         volume_size_unit: exchange::SizeUnit,
         debug_terminal_enabled: bool,
+        cache_market_metadata: bool,
     ) -> Self {
         State {
             saved_state_version: CURRENT_SAVED_STATE_VERSION,
@@ -79,6 +82,7 @@ impl State {
             network,
             size_in_quote_ccy: volume_size_unit,
             debug_terminal_enabled,
+            cache_market_metadata,
         }
     }
 }

@@ -1,6 +1,6 @@
 use super::{
     Action, Basis, Chart, Interaction, Message, PlotConstants, PlotData, TEXT_SIZE, ViewState,
-    indicator, request_fetch, scale::linear::PriceInfoLabel,
+    indicator, request_fetch, ticks::y::PriceInfoLabel,
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
 use crate::connector::fetcher::{
@@ -248,8 +248,8 @@ impl Chart for KlineChart {
     fn drawing_axis_labels(
         &self,
     ) -> (
-        Vec<crate::chart::scale::AxisOverlayLabel>,
-        Vec<crate::chart::scale::AxisOverlayLabel>,
+        Vec<crate::chart::ticks::AxisOverlayLabel>,
+        Vec<crate::chart::ticks::AxisOverlayLabel>,
     ) {
         matches!(self.kind, KlineChartKind::Candles)
             .then(|| self.axis_drawing_labels())
@@ -395,7 +395,6 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits.clone(),
@@ -405,6 +404,11 @@ impl KlineChart {
                     cell_height,
                 );
                 chart.base_price_y = base_price_y;
+                chart.max_price = klines_raw
+                    .iter()
+                    .map(|k| k.high)
+                    .max()
+                    .unwrap_or(Price::from_f32(0.0));
                 chart.latest_x = latest_x;
 
                 let x_translation = match &kind {
@@ -475,7 +479,6 @@ impl KlineChart {
                 let mut chart = ViewState::new(
                     basis,
                     step,
-                    step.decimal_places(),
                     ticker_info,
                     ViewConfig {
                         splits: layout.splits.clone(),
@@ -582,6 +585,7 @@ impl KlineChart {
                     previous_latest_x,
                     chart.latest_x
                 );
+                chart.max_price = chart.max_price.max(kline.high);
             }
             PlotData::TickBased(_) => {
                 log::trace!(
@@ -1805,6 +1809,7 @@ impl KlineChart {
         let previous_basis = self.chart.basis;
 
         self.chart.last_price = None;
+        self.chart.max_price = Price::from_f32(0.0);
         self.chart.basis = new_basis;
 
         match new_basis {
@@ -1830,6 +1835,8 @@ impl KlineChart {
                 let step = self.chart.tick_size;
                 let tick_aggr = TickAggr::new(tick_count, step, trades);
                 self.data_source = PlotData::TickBased(tick_aggr);
+                let max_price = trades.iter().map(|t| t.price).max();
+                self.chart.max_price = max_price.unwrap_or(Price::from_f32(0.0));
             }
         }
 
@@ -1926,6 +1933,12 @@ impl KlineChart {
                 } else {
                     self.chart.last_price = None;
                 }
+
+                let max_price = buffer.iter().map(|t| t.price).max();
+                self.chart.max_price = self
+                    .chart
+                    .max_price
+                    .max(max_price.unwrap_or(Price::from_f32(0.0)));
 
                 self.indicators
                     .values_mut()
@@ -2145,6 +2158,11 @@ impl KlineChart {
                         trades_for_new_buckets.len()
                     );
                 }
+                let max_high = klines_raw.iter().map(|k| k.high).max();
+                self.chart.max_price = self
+                    .chart
+                    .max_price
+                    .max(max_high.unwrap_or(Price::from_f32(0.0)));
 
                 self.indicators
                     .values_mut()

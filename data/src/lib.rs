@@ -4,6 +4,7 @@ pub mod chart;
 pub mod config;
 pub mod layout;
 pub mod log;
+pub mod metadata;
 pub mod orderflow;
 pub mod panel;
 pub mod stream;
@@ -24,6 +25,7 @@ pub use config::timezone::UserTimezone;
 
 use ::log::{error, info, warn};
 pub use layout::{Dashboard, Layout, Pane};
+pub use metadata::{MarketMetadata, MetadataSource};
 
 pub const SAVED_STATE_PATH: &str = "saved-state.json";
 const SAVED_STATE_BACKUP_PATH: &str = "saved-state.backup.json";
@@ -95,8 +97,20 @@ pub fn write_json_to_file(json: &str, file_name: &str) -> std::io::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
 
-    let mut file = File::create(path)?;
-    file.write_all(json.as_bytes())?;
+    // Write to a temp file and rename so the previous good state survives a
+    // crash or partial write.
+    let tmp_path = path.with_extension("tmp");
+
+    let write_result = File::create(&tmp_path).and_then(|mut file| {
+        file.write_all(json.as_bytes())?;
+        file.sync_all()?;
+        std::fs::rename(&tmp_path, &path)
+    });
+
+    if let Err(e) = write_result {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e);
+    }
     Ok(())
 }
 
