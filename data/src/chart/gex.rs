@@ -979,8 +979,8 @@ mod proxy_mapping_tests {
             net_gex_1pct: Some(9_689.0),
             absolute_gex_1pct: 10_000.0,
             call_wall: Some(410.0),
-            put_wall: None,
-            gamma_flip: None,
+            put_wall: Some(390.0),
+            gamma_flip: Some(402.0),
             intrinsic_stress: Default::default(),
             gamma_vega: Default::default(),
             strikes: Arc::from([GexStrike {
@@ -994,8 +994,22 @@ mod proxy_mapping_tests {
                 expiration_count: 1,
                 gamma_provenance: GexGammaProvenance::Native,
             }]),
-            expiry_strikes: Arc::default(),
-            scenario_curve: Arc::default(),
+            expiry_strikes: Arc::from([GexExpiryStrike {
+                expiration: UnixMs::new(2),
+                strike: 405.0,
+                call_gex_1pct: 10.0,
+                put_gex_1pct: -2.0,
+                net_gex_1pct: 8.0,
+                absolute_gamma_1pct: 12.0,
+                call_open_interest: 20.0,
+                put_open_interest: 4.0,
+                gamma_provenance: GexGammaProvenance::Native,
+            }]),
+            scenario_curve: Arc::from([GexScenarioPoint {
+                price: 405.0,
+                net_gex_1pct: 8.0,
+                absolute_gex_1pct: 12.0,
+            }]),
             scale_p95: 9_689.0,
             proxy: None,
         }
@@ -1008,8 +1022,10 @@ mod proxy_mapping_tests {
             map_proxy_snapshot(&snapshot(), "GLD", "XAUTUSDT", 4_000.0).expect("valid mapping");
         assert_eq!(mapped.strikes[0].strike, 4_050.0);
         assert_eq!(mapped.call_wall, Some(4_100.0));
-        assert_eq!(mapped.put_wall, None);
-        assert_eq!(mapped.gamma_flip, None);
+        assert_eq!(mapped.put_wall, Some(3_900.0));
+        assert_eq!(mapped.gamma_flip, Some(4_020.0));
+        assert_eq!(mapped.expiry_strikes[0].strike, 4_050.0);
+        assert_eq!(mapped.scenario_curve[0].price, 4_050.0);
         assert_eq!(mapped.strikes[0].net_gex_1pct, 9_689.0);
         assert_eq!(mapped.net_gex_1pct, Some(9_689.0));
         assert_eq!(mapped.proxy.as_ref().unwrap().source_spot, 400.0);

@@ -478,15 +478,16 @@ impl Dashboard {
                                 let target = market
                                     .map(|ticker| ticker.ticker.display_symbol_and_type().0)
                                     .unwrap_or_else(|| target_symbol.to_owned());
-                                let history = coordinator.mapped_quantwheel_history(
-                                    &target,
-                                    target_spot,
-                                    levels.history_minutes,
-                                    now,
-                                );
                                 let snapshot = coordinator
                                     .mapped_quantwheel(&target, target_spot)
-                                    .or_else(|| history.last().cloned());
+                                    .or_else(|| {
+                                        coordinator
+                                            .mapped_quantwheel_history(levels.history_minutes, now)
+                                            .last()
+                                            .cloned()
+                                    });
+                                let history = coordinator
+                                    .mapped_quantwheel_history(levels.history_minutes, now);
                                 (
                                     snapshot,
                                     history,

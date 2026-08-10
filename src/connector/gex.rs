@@ -119,7 +119,8 @@ struct CachedGexSnapshot {
 
 #[derive(Debug, Clone)]
 struct CachedQuantWheelSnapshot {
-    value: Arc<GexSnapshot>,
+    source: Arc<GexSnapshot>,
+    mapped: Option<Arc<GexSnapshot>>,
     received_at: UnixMs,
 }
 
@@ -173,7 +174,7 @@ pub struct GexDataCoordinator {
     last_freshness: FxHashMap<OptionsChainKey, GexFreshness>,
     quantwheel_subscribers: usize,
     quantwheel_snapshot: Option<CachedQuantWheelSnapshot>,
-    quantwheel_history: VecDeque<Arc<GexSnapshot>>,
+    quantwheel_mapped_history: VecDeque<Arc<GexSnapshot>>,
     quantwheel_in_flight: bool,
     quantwheel_failure: Option<FailureState>,
     quantwheel_force_refresh: bool,
@@ -224,7 +225,7 @@ impl GexDataCoordinator {
             last_freshness: FxHashMap::default(),
             quantwheel_subscribers: 0,
             quantwheel_snapshot: None,
-            quantwheel_history: VecDeque::new(),
+            quantwheel_mapped_history: VecDeque::new(),
             quantwheel_in_flight: false,
             quantwheel_failure: None,
             quantwheel_force_refresh: false,
@@ -366,18 +367,18 @@ impl GexDataCoordinator {
         self.quantwheel_force_refresh = false;
         match result {
             Ok(source) => {
-                let value = Arc::new(quantwheel_snapshot(source, now));
-                self.quantwheel_history.push_back(value.clone());
+                let source = Arc::new(quantwheel_snapshot(source, now));
                 let cutoff = now.saturating_sub(24 * 60 * 60 * 1_000);
                 while self
-                    .quantwheel_history
+                    .quantwheel_mapped_history
                     .front()
                     .is_some_and(|snapshot| snapshot.observed_at < cutoff)
                 {
-                    self.quantwheel_history.pop_front();
+                    self.quantwheel_mapped_history.pop_front();
                 }
                 self.quantwheel_snapshot = Some(CachedQuantWheelSnapshot {
-                    value,
+                    source,
+                    mapped: None,
                     received_at: now,
                 });
                 self.quantwheel_failure = None;
@@ -403,30 +404,38 @@ impl GexDataCoordinator {
     }
 
     pub fn mapped_quantwheel(
-        &self,
+        &mut self,
         target_symbol: &str,
-        target_spot: f64,
+        target_spot_anchor: f64,
     ) -> Option<Arc<GexSnapshot>> {
-        self.quantwheel_snapshot.as_ref().and_then(|cached| {
-            map_proxy_snapshot(&cached.value, "GLD", target_symbol, target_spot).map(Arc::new)
-        })
+        let cached = self.quantwheel_snapshot.as_mut()?;
+        // A target price is consumed only once for each accepted source snapshot.
+        // All later market ticks reuse these mapped coordinates until QuantWheel
+        // supplies a new snapshot and replaces this cache entry.
+        if cached.mapped.is_none() {
+            let mapped = Arc::new(map_proxy_snapshot(
+                &cached.source,
+                "GLD",
+                target_symbol,
+                target_spot_anchor,
+            )?);
+            self.quantwheel_mapped_history.push_back(mapped.clone());
+            cached.mapped = Some(mapped);
+        }
+        cached.mapped.clone()
     }
 
     pub fn mapped_quantwheel_history(
         &self,
-        target_symbol: &str,
-        target_spot: f64,
         retention_minutes: u16,
         now: UnixMs,
     ) -> Vec<Arc<GexSnapshot>> {
         let cutoff = now
             .saturating_sub(u64::from(retention_minutes.clamp(30, 24 * 60)).saturating_mul(60_000));
-        self.quantwheel_history
+        self.quantwheel_mapped_history
             .iter()
             .filter(|snapshot| snapshot.observed_at >= cutoff)
-            .filter_map(|snapshot| {
-                map_proxy_snapshot(snapshot, "GLD", target_symbol, target_spot).map(Arc::new)
-            })
+            .cloned()
             .collect()
     }
 
@@ -1581,14 +1590,24 @@ mod tests {
     }
 
     fn quantwheel_source(now: UnixMs) -> QuantWheelGexSnapshot {
+        quantwheel_source_at(now, 400.0)
+    }
+
+    fn quantwheel_source_at(now: UnixMs, stock_price: f64) -> QuantWheelGexSnapshot {
         QuantWheelGexSnapshot {
             provider: OptionsProvider::QuantWheel,
             underlying: OptionsUnderlying::Gld,
-            stock_price: 400.0,
+            stock_price,
             total_gex: 9_689.0,
-            call_wall: None,
-            put_wall: None,
-            gamma_inflection: None,
+            call_wall: Some(exchange::options::quantwheel::QuantWheelWall {
+                strike: 410.0,
+                gex: 1_000.0,
+            }),
+            put_wall: Some(exchange::options::quantwheel::QuantWheelWall {
+                strike: 390.0,
+                gex: -1_000.0,
+            }),
+            gamma_inflection: Some(402.0),
             levels: vec![exchange::options::quantwheel::QuantWheelGexLevel {
                 strike: 405.0,
                 call_gex: 11_413.0,
@@ -1603,7 +1622,7 @@ mod tests {
     }
 
     #[test]
-    fn quantwheel_refresh_is_independent_from_realtime_mapping() {
+    fn target_price_movement_does_not_remap_accepted_quantwheel_snapshot() {
         let now = UnixMs::new(1_800_000_000_000);
         let mut value = coordinator();
         value.set_consumers([GexSource::xaut_gld()]);
@@ -1615,12 +1634,65 @@ mod tests {
             .expect("mapped snapshot");
         let moved = value
             .mapped_quantwheel("XAUTUSDT", 4_100.0)
-            .expect("remapped snapshot");
+            .expect("cached mapped snapshot");
         assert_eq!(first.strikes[0].strike, 4_050.0);
-        assert_eq!(moved.strikes[0].strike, 4_151.25);
+        assert_eq!(moved.strikes[0].strike, 4_050.0);
+        assert_eq!(moved.call_wall, Some(4_100.0));
+        assert_eq!(moved.put_wall, Some(3_900.0));
+        assert_eq!(moved.gamma_flip, Some(4_020.0));
+        assert_eq!(moved.proxy.as_ref().unwrap().target_spot, 4_000.0);
+        assert!(Arc::ptr_eq(&first, &moved));
         assert_eq!(first.strikes[0].net_gex_1pct, moved.strikes[0].net_gex_1pct);
         assert!(!value.due_quantwheel_fetch(now.saturating_add(1), true));
         assert!(value.due_quantwheel_fetch(now.saturating_add(QUANTWHEEL_REFRESH_MS), true));
+    }
+
+    #[test]
+    fn new_quantwheel_snapshot_creates_a_new_mapping_anchor() {
+        let t1 = UnixMs::new(1_800_000_000_000);
+        let t2 = t1.saturating_add(QUANTWHEEL_REFRESH_MS);
+        let mut value = coordinator();
+        value.set_consumers([GexSource::xaut_gld()]);
+        value.complete_quantwheel(Ok(quantwheel_source_at(t1, 400.0)), t1);
+        let first = value
+            .mapped_quantwheel("XAUTUSDT", 4_000.0)
+            .expect("first mapping");
+
+        value.complete_quantwheel(Ok(quantwheel_source_at(t2, 401.0)), t2);
+        let second = value
+            .mapped_quantwheel("XAUTUSDT", 4_100.0)
+            .expect("second mapping");
+
+        assert_eq!(first.strikes[0].strike, 4_050.0);
+        assert!((second.strikes[0].strike - (405.0 * 4_100.0 / 401.0)).abs() < 1e-9);
+        assert_eq!(second.proxy.as_ref().unwrap().source_spot, 401.0);
+        assert_eq!(second.proxy.as_ref().unwrap().target_spot, 4_100.0);
+    }
+
+    #[test]
+    fn historical_proxy_snapshots_keep_their_original_mapping() {
+        let t1 = UnixMs::new(1_800_000_000_000);
+        let t2 = t1.saturating_add(QUANTWHEEL_REFRESH_MS);
+        let mut value = coordinator();
+        value.set_consumers([GexSource::xaut_gld()]);
+        value.complete_quantwheel(Ok(quantwheel_source_at(t1, 400.0)), t1);
+        value
+            .mapped_quantwheel("XAUTUSDT", 4_000.0)
+            .expect("first mapping");
+        value
+            .mapped_quantwheel("XAUTUSDT", 4_100.0)
+            .expect("same mapping after realtime move");
+
+        value.complete_quantwheel(Ok(quantwheel_source_at(t2, 401.0)), t2);
+        value
+            .mapped_quantwheel("XAUTUSDT", 4_100.0)
+            .expect("second mapping");
+        let history = value.mapped_quantwheel_history(24 * 60, t2);
+
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].strikes[0].strike, 4_050.0);
+        assert_eq!(history[0].proxy.as_ref().unwrap().target_spot, 4_000.0);
+        assert!((history[1].strikes[0].strike - (405.0 * 4_100.0 / 401.0)).abs() < 1e-9);
     }
 
     #[test]
