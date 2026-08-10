@@ -398,6 +398,10 @@ fn migrate_saved_state_value(value: &mut serde_json::Value) -> MigrationReport {
         sanitize_layout_manager(layout_manager, &mut report.warnings);
     }
 
+    if let Some(sidebar) = root.get_mut("sidebar") {
+        sanitize_sidebar_value(sidebar, &mut report.warnings);
+    }
+
     report
 }
 
@@ -589,12 +593,7 @@ fn sanitize_pane(value: &mut serde_json::Value, warnings: &mut Vec<String>) {
                     warnings,
                     "heatmap indicator",
                 );
-                sanitize_vec_tagged_enum(
-                    pane.get_mut("stream_type"),
-                    &["Kline", "Depth", "Trades", "DepthAndTrades"],
-                    warnings,
-                    "stream",
-                );
+                sanitize_streams(pane.get_mut("stream_type"), warnings);
                 sanitize_settings(
                     pane.entry("settings")
                         .or_insert_with(|| serde_json::json!({})),
@@ -622,12 +621,7 @@ fn sanitize_pane(value: &mut serde_json::Value, warnings: &mut Vec<String>) {
                     warnings,
                     "kline indicator",
                 );
-                sanitize_vec_tagged_enum(
-                    pane.get_mut("stream_type"),
-                    &["Kline", "Depth", "Trades", "DepthAndTrades"],
-                    warnings,
-                    "stream",
-                );
+                sanitize_streams(pane.get_mut("stream_type"), warnings);
                 sanitize_kline_kind(
                     pane.entry("kind")
                         .or_insert_with(|| serde_json::json!("Candles")),
@@ -645,6 +639,13 @@ fn sanitize_pane(value: &mut serde_json::Value, warnings: &mut Vec<String>) {
                 .get_mut("GexChart")
                 .and_then(serde_json::Value::as_object_mut)
             {
+                if let Some(reference) = pane.get_mut("liquidity_reference")
+                    && !reference.is_null()
+                    && serde_json::from_value::<exchange::TickerInfo>(reference.clone()).is_err()
+                {
+                    *reference = serde_json::Value::Null;
+                    warnings.push("dropped unsupported GEX liquidity reference".to_string());
+                }
                 sanitize_settings(
                     pane.entry("settings")
                         .or_insert_with(|| serde_json::json!({})),
@@ -657,12 +658,7 @@ fn sanitize_pane(value: &mut serde_json::Value, warnings: &mut Vec<String>) {
                 .get_mut(&tag)
                 .and_then(serde_json::Value::as_object_mut)
             {
-                sanitize_vec_tagged_enum(
-                    pane.get_mut("stream_type"),
-                    &["Kline", "Depth", "Trades", "DepthAndTrades"],
-                    warnings,
-                    "stream",
-                );
+                sanitize_streams(pane.get_mut("stream_type"), warnings);
                 sanitize_settings(
                     pane.entry("settings")
                         .or_insert_with(|| serde_json::json!({})),
@@ -729,6 +725,114 @@ fn sanitize_kline_kind(value: &mut serde_json::Value, warnings: &mut Vec<String>
 
     *value = serde_json::json!("Candles");
     warnings.push("unknown kline chart kind defaulted to Candles".to_string());
+}
+
+fn sanitize_sidebar_value(value: &mut serde_json::Value, warnings: &mut Vec<String>) {
+    let Some(sidebar) = value.as_object_mut() else {
+        *value = serde_json::to_value(crate::Sidebar::default())
+            .expect("default sidebar should serialize");
+        warnings.push("sidebar was invalid; reset to defaults".to_string());
+        return;
+    };
+
+    if !matches!(
+        sidebar.get("position").and_then(serde_json::Value::as_str),
+        Some("Left" | "Right")
+    ) {
+        sidebar.insert("position".to_string(), serde_json::json!("Left"));
+        warnings.push("unknown sidebar position defaulted to left".to_string());
+    }
+
+    let Some(table_value) = sidebar.get_mut("tickers_table") else {
+        return;
+    };
+    if table_value.is_null() {
+        return;
+    }
+
+    let Some(table) = table_value.as_object_mut() else {
+        *table_value = serde_json::Value::Null;
+        warnings.push("ticker table settings were invalid; reset to defaults".to_string());
+        return;
+    };
+
+    let defaults = serde_json::to_value(crate::tickers_table::Settings::default())
+        .expect("default ticker table settings should serialize");
+    for (key, default) in defaults
+        .as_object()
+        .expect("ticker table settings should serialize as an object")
+    {
+        table.entry(key.clone()).or_insert_with(|| default.clone());
+    }
+
+    sanitize_deserializable_vec::<exchange::Ticker>(
+        table.get_mut("favorited_tickers"),
+        warnings,
+        "unsupported favorite ticker",
+    );
+    sanitize_deserializable_vec::<exchange::adapter::Venue>(
+        table.get_mut("selected_exchanges"),
+        warnings,
+        "unsupported exchange",
+    );
+    sanitize_deserializable_vec::<exchange::adapter::MarketKind>(
+        table.get_mut("selected_markets"),
+        warnings,
+        "unsupported market kind",
+    );
+
+    if serde_json::from_value::<crate::tickers_table::Settings>(table_value.clone()).is_err() {
+        *table_value = serde_json::to_value(crate::tickers_table::Settings::default())
+            .expect("default ticker table settings should serialize");
+        warnings.push("ticker table settings were incompatible; reset to defaults".to_string());
+    }
+}
+
+fn sanitize_streams(value: Option<&mut serde_json::Value>, warnings: &mut Vec<String>) {
+    let Some(value) = value else {
+        return;
+    };
+    let Some(streams) = value.as_array_mut() else {
+        *value = serde_json::json!([]);
+        warnings.push("stream list was invalid; reset to empty".to_string());
+        return;
+    };
+
+    streams.retain(|entry| {
+        let known_tag =
+            is_known_tagged_enum(entry, &["Kline", "Depth", "Trades", "DepthAndTrades"]);
+        let supported = known_tag
+            && serde_json::from_value::<crate::stream::PersistStreamKind>(entry.clone()).is_ok();
+        if !supported {
+            warnings.push("dropped unsupported stream".to_string());
+        }
+        supported
+    });
+}
+
+fn sanitize_deserializable_vec<T>(
+    value: Option<&mut serde_json::Value>,
+    warnings: &mut Vec<String>,
+    warning: &str,
+) where
+    T: serde::de::DeserializeOwned,
+{
+    let Some(value) = value else {
+        return;
+    };
+    let Some(entries) = value.as_array_mut() else {
+        *value = serde_json::json!([]);
+        warnings.push(format!("{warning} list was invalid; reset to empty"));
+        return;
+    };
+
+    entries.retain(|entry| {
+        let supported = serde_json::from_value::<T>(entry.clone()).is_ok();
+        if !supported {
+            warnings.push(format!("dropped {warning}"));
+        }
+        supported
+    });
 }
 
 fn sanitize_vec_tagged_enum(
@@ -1093,6 +1197,133 @@ mod tests {
                 assert!(warnings.iter().any(|warning| warning.contains("indicator")));
             }
             _ => panic!("unexpected outcome"),
+        }
+    }
+
+    #[test]
+    fn unsupported_exchange_data_is_dropped_without_losing_valid_layout_configuration() {
+        let path = temp_state_path("saved-state.json");
+        let value = serde_json::json!({
+            "saved_state_version": CURRENT_SAVED_STATE_VERSION,
+            "layout_manager": {
+                "layouts": [
+                    {
+                        "name": "BTCUSDT",
+                        "dashboard": {
+                            "pane": {
+                                "KlineChart": {
+                                    "layout": { "splits": [0.8], "autoscale": "FitToVisible" },
+                                    "kind": "Candles",
+                                    "drawings": [],
+                                    "stream_type": [{
+                                        "Kline": {
+                                            "ticker": "BinanceLinear:BTCUSDT",
+                                            "timeframe": "M5"
+                                        }
+                                    }],
+                                    "settings": {
+                                        "visual_config": {
+                                            "Kline": { "data_labels_always_visible": true }
+                                        },
+                                        "selected_basis": { "Time": "M5" }
+                                    },
+                                    "indicators": ["VolumeBubbles", "GexLevels"],
+                                    "link_group": null
+                                }
+                            },
+                            "popout": []
+                        }
+                    },
+                    {
+                        "name": "Unsupported futures",
+                        "dashboard": {
+                            "pane": {
+                                "KlineChart": {
+                                    "layout": { "splits": [], "autoscale": null },
+                                    "kind": "Candles",
+                                    "drawings": [],
+                                    "stream_type": [
+                                        {
+                                            "Kline": {
+                                                "ticker": "RithmicFutures:CME-Delayed/NQU6",
+                                                "timeframe": "M15"
+                                            }
+                                        },
+                                        {
+                                            "Trades": {
+                                                "ticker": "RithmicFutures:CME-Delayed/NQU6"
+                                            }
+                                        }
+                                    ],
+                                    "settings": {},
+                                    "indicators": ["Volume"],
+                                    "link_group": null
+                                }
+                            },
+                            "popout": []
+                        }
+                    }
+                ],
+                "active_layout": "BTCUSDT"
+            },
+            "sidebar": {
+                "position": "Left",
+                "tickers_table": {
+                    "favorited_tickers": [
+                        "BinanceLinear:BTCUSDT",
+                        "RithmicFutures:CME-Delayed/NQU6"
+                    ],
+                    "show_favorites": false,
+                    "selected_sort_option": "VolumeDesc",
+                    "selected_exchanges": ["Binance", "Rithmic"],
+                    "selected_markets": ["LinearPerps", "Futures"]
+                }
+            }
+        });
+        std::fs::write(&path, serde_json::to_string(&value).unwrap()).unwrap();
+
+        match load_saved_state_from_path(&path) {
+            StateLoadOutcome::Recovered {
+                state, warnings, ..
+            } => {
+                assert_eq!(state.layout_manager.layouts.len(), 2);
+                assert!(warnings.iter().any(|warning| warning.contains("exchange")));
+                assert!(warnings.iter().any(|warning| warning.contains("stream")));
+
+                let crate::Pane::KlineChart {
+                    settings,
+                    indicators,
+                    stream_type,
+                    ..
+                } = &state.layout_manager.layouts[0].dashboard.pane
+                else {
+                    panic!("expected valid KlineChart pane");
+                };
+                assert_eq!(stream_type.len(), 1);
+                assert!(settings.visual_config.is_some());
+                assert!(
+                    indicators.contains(&crate::chart::indicator::KlineIndicator::VolumeBubbles)
+                );
+                assert!(indicators.contains(&crate::chart::indicator::KlineIndicator::GexLevels));
+
+                let crate::Pane::KlineChart { stream_type, .. } =
+                    &state.layout_manager.layouts[1].dashboard.pane
+                else {
+                    panic!("expected unsupported KlineChart shell to be preserved");
+                };
+                assert!(stream_type.is_empty());
+
+                let ticker_settings = state
+                    .sidebar
+                    .tickers_table
+                    .expect("ticker settings should be preserved");
+                assert_eq!(
+                    ticker_settings.selected_exchanges,
+                    vec![exchange::adapter::Venue::Binance]
+                );
+                assert_eq!(ticker_settings.favorited_tickers.len(), 1);
+            }
+            _ => panic!("expected recovered state"),
         }
     }
 
