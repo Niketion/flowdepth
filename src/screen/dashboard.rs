@@ -743,13 +743,6 @@ impl Dashboard {
                 pane::Message::Restore => {
                     self.panes.restore();
                 }
-                pane::Message::ReplacePane(pane) => {
-                    if let Some(pane) = self.panes.get_mut(pane) {
-                        *pane = pane::State::new();
-                    }
-
-                    return (self.refresh_streams(main_window.id), None);
-                }
                 pane::Message::VisualConfigChanged(pane, cfg, to_sync) => {
                     let mut refresh_streams = false;
 

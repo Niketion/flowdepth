@@ -48,8 +48,7 @@ use exchange::{
 use iced::{
     Alignment, Element, Length, Renderer, Theme, padding,
     widget::{
-        button, center, column, container, pane_grid, pick_list, responsive, row, rule, text,
-        tooltip,
+        button, center, column, container, pane_grid, pick_list, responsive, row, text, tooltip,
     },
 };
 use std::time::Instant;
@@ -105,7 +104,6 @@ pub enum Message {
     SplitPane(pane_grid::Axis, pane_grid::Pane),
     MaximizePane(pane_grid::Pane),
     Restore,
-    ReplacePane(pane_grid::Pane),
     Popout,
     Merge,
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
@@ -2460,33 +2458,13 @@ impl State {
                     Alignment::Start,
                 )
             }
-            Some(Modal::Settings) => {
-                let settings_content = column![
-                    settings_modal(),
-                    container(
-                        column![
-                            rule::horizontal(1.0).style(style::split_ruler),
-                            button(text("Reset view"))
-                                .width(Length::Fill)
-                                .on_press(Message::ReplacePane(pane)),
-                        ]
-                        .spacing(12)
-                    )
-                    .padding(padding::right(28).bottom(28).left(28)),
-                ]
-                .spacing(0);
-                let settings = container(settings_content)
-                    .width(Length::Fill)
-                    .max_width(360)
-                    .style(style::chart_modal);
-                stack_modal(
-                    base,
-                    settings,
-                    on_blur,
-                    padding::right(12).left(12),
-                    Alignment::End,
-                )
-            }
+            Some(Modal::Settings) => stack_modal(
+                base,
+                settings_modal(),
+                on_blur,
+                padding::right(12).left(12),
+                Alignment::End,
+            ),
             Some(Modal::Indicators) => stack_modal(
                 base,
                 indicator_modal.unwrap_or_else(|| column![].into()),
