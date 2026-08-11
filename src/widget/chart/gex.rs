@@ -4,7 +4,8 @@ use data::chart::gex::{
     IntrinsicStressLevel, OiProxyAgreement,
 };
 use iced::{
-    Alignment, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, mouse,
+    Alignment, Background, Border, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme,
+    mouse,
     widget::{
         button, canvas, column, container, mouse_area, responsive, row, rule, space, svg, text,
         tooltip,
@@ -46,11 +47,8 @@ fn view_sized(chart: &gex::GexChart, density: GexLayoutDensity) -> Element<'_, g
             .align_x(Alignment::Center)
             .width(Length::Fill);
         if chart.quantwheel_quota().is_some() {
-            content = content.push(
-                container(quantwheel_quota_card(chart, density))
-                    .width(Length::Fixed(420.0))
-                    .style(card_style),
-            );
+            content = content
+                .push(container(quantwheel_quota_card(chart, density)).width(Length::Fixed(420.0)));
         }
         return iced::widget::center(content).into();
     };
@@ -413,7 +411,7 @@ fn analytics_view<'a>(
 
 fn quantwheel_quota_card(
     chart: &gex::GexChart,
-    density: GexLayoutDensity,
+    _density: GexLayoutDensity,
 ) -> Element<'_, gex::Message> {
     let quota = chart
         .quantwheel_quota()
@@ -422,47 +420,160 @@ fn quantwheel_quota_card(
     let remaining = quota.remaining;
     let exhausted = remaining == Some(0);
     let status = match remaining {
-        Some(0) => "Limit reached".to_owned(),
-        Some(value) => format!("{value} left"),
-        None => "Usage unknown".to_owned(),
+        Some(0) => "LIMIT REACHED".to_owned(),
+        Some(value) => format!("{value} LEFT"),
+        None => "USAGE UNKNOWN".to_owned(),
     };
-    let primary = used.map_or_else(
-        || format!("— / {} fetches used", quota.limit),
-        |value| format!("{value} / {} fetches used", quota.limit),
-    );
-    let secondary = if exhausted {
+    let countdown = if exhausted {
         let remaining_ms = quota.reset_at.saturating_diff(exchange::UnixMs::now());
         let estimate = if quota.reset_is_estimate {
-            "estimated UTC reset"
+            "estimated · 00:00 UTC"
         } else {
             "provider reset"
         };
-        format!(
-            "Available again in {} · {estimate}",
-            format_countdown(remaining_ms)
-        )
+        Some((format_countdown(remaining_ms), estimate))
     } else {
-        "Anonymous QuantWheel daily allowance".to_owned()
+        None
     };
-    analytics_section(
-        "QuantWheel free tier",
-        GaugeVisual {
-            asset: include_bytes!("../../../assets/gex/liquidity-impact-gauge.svg"),
-            normalized: used.map(|value| f32::from(value) / f32::from(quota.limit.max(1))),
-            muted: used.is_none(),
-        },
+
+    let badge = container(text("FREE · 5/DAY").size(9))
+        .padding([2, 6])
+        .style(|theme: &Theme| {
+            let palette = theme.extended_palette();
+            container::Style {
+                text_color: Some(palette.primary.strong.text),
+                background: Some(Background::Color(palette.primary.strong.color)),
+                border: Border {
+                    radius: 8.0.into(),
+                    ..Border::default()
+                },
+                ..container::Style::default()
+            }
+        });
+    let status = text(status)
+        .size(9)
+        .style(move |theme: &Theme| iced::widget::text::Style {
+            color: Some(if exhausted {
+                theme.extended_palette().danger.strong.color
+            } else {
+                theme.extended_palette().primary.strong.color
+            }),
+        });
+    let heading = row![
+        text("QuantWheel allowance")
+            .size(style::text_size::TINY)
+            .width(Length::Fill),
+        badge,
         status,
-        if exhausted {
-            Semantic::Danger
-        } else {
-            Semantic::Primary
+        info("QuantWheel documents 5 anonymous results per feature per day. Usage comes from the provider's x-ratelimit-remaining response header. QuantWheel does not currently return a reset timestamp, so 00:00 UTC is shown as an estimate.".to_owned()),
+    ]
+    .spacing(6)
+    .align_y(Alignment::Center);
+
+    let mut meter = row![].spacing(4).width(Length::Fill);
+    for index in 0..quota.limit {
+        let filled = used.is_some_and(|used| index < used);
+        meter = meter.push(
+            container(space::horizontal())
+                .height(6)
+                .width(Length::FillPortion(1))
+                .style(move |theme: &Theme| quota_segment_style(theme, filled, exhausted)),
+        );
+    }
+
+    let used_value = used.map_or_else(|| "—".to_owned(), |value| value.to_string());
+    let usage = row![
+        text(used_value).size(26),
+        text(format!("/ {}", quota.limit))
+            .size(style::text_size::SECTION)
+            .style(|theme: &Theme| iced::widget::text::Style {
+                color: Some(theme.palette().text.scale_alpha(0.55)),
+            }),
+        space::horizontal(),
+        text("anonymous fetches used today")
+            .size(9)
+            .style(|theme: &Theme| iced::widget::text::Style {
+                color: Some(theme.palette().text.scale_alpha(0.62)),
+            }),
+    ]
+    .spacing(4)
+    .align_y(Alignment::End);
+
+    let mut content = column![heading, usage, meter]
+        .spacing(7)
+        .width(Length::Fill);
+    if let Some((countdown, estimate)) = countdown {
+        content = content.push(
+            container(
+                row![
+                    text("NEXT FETCH").size(9),
+                    space::horizontal(),
+                    text(countdown).size(style::text_size::SECTION),
+                    text(estimate).size(9),
+                ]
+                .spacing(7)
+                .align_y(Alignment::Center),
+            )
+            .padding([5, 8])
+            .style(|theme: &Theme| {
+                let palette = theme.extended_palette();
+                container::Style {
+                    background: Some(Background::Color(
+                        palette.danger.weak.color.scale_alpha(0.24),
+                    )),
+                    border: Border {
+                        color: palette.danger.weak.color.scale_alpha(0.5),
+                        width: 1.0,
+                        radius: 4.0.into(),
+                    },
+                    ..container::Style::default()
+                }
+            }),
+        );
+    }
+
+    container(content)
+        .width(Length::FillPortion(1))
+        .padding([8, 10])
+        .style(move |theme: &Theme| quota_card_style(theme, exhausted))
+        .into()
+}
+
+fn quota_segment_style(theme: &Theme, filled: bool, exhausted: bool) -> container::Style {
+    let palette = theme.extended_palette();
+    let color = if filled && exhausted {
+        palette.danger.strong.color
+    } else if filled {
+        palette.primary.strong.color
+    } else {
+        palette.background.strong.color.scale_alpha(0.38)
+    };
+    container::Style {
+        background: Some(Background::Color(color)),
+        border: Border {
+            radius: 3.0.into(),
+            ..Border::default()
         },
-        primary,
-        secondary,
-        "QuantWheel documents 5 anonymous results per feature per day. The API reports remaining usage through x-ratelimit-remaining. It does not currently return a reset timestamp, so the displayed reset falls back to the next 00:00 UTC and is marked as estimated.".to_owned(),
-        None,
-        density,
-    )
+        ..container::Style::default()
+    }
+}
+
+fn quota_card_style(theme: &Theme, exhausted: bool) -> container::Style {
+    let palette = theme.extended_palette();
+    let accent = if exhausted {
+        palette.danger.weak.color
+    } else {
+        palette.primary.weak.color
+    };
+    container::Style {
+        background: Some(Background::Color(accent.scale_alpha(0.10))),
+        border: Border {
+            color: accent.scale_alpha(0.55),
+            width: 1.0,
+            radius: 7.0.into(),
+        },
+        ..container::Style::default()
+    }
 }
 
 fn format_countdown(milliseconds: u64) -> String {

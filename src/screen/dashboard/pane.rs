@@ -931,12 +931,58 @@ impl State {
             })]
         };
 
-        if let Content::Gex { underlying, .. } = &self.content {
-            let provider = if *underlying == exchange::options::OptionsUnderlying::Gld {
-                "GLD Proxy QuantWheel"
+        if let Content::Gex {
+            underlying,
+            chart,
+            liquidity_reference,
+            ..
+        } = &self.content
+        {
+            let gex_source = if *underlying == exchange::options::OptionsUnderlying::Gld {
+                "GEX · QuantWheel GLD"
             } else {
-                "Deribit"
+                "GEX · Deribit"
             };
+            let reference = chart
+                .as_ref()
+                .and_then(GexChart::liquidity_reference)
+                .or(*liquidity_reference);
+            let reference_content: Element<'_, Message> = if let Some(reference) = reference {
+                let (symbol, _) = reference.ticker.display_symbol_and_type();
+                row![
+                    icon_text(style::venue_icon(reference.exchange().venue()), 13)
+                        .align_y(Alignment::Center),
+                    text(format!("Liquidity · {} · {symbol}", reference.exchange()))
+                        .size(crate::style::text_size::SMALL)
+                        .wrapping(iced::widget::text::Wrapping::None),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center)
+                .into()
+            } else {
+                row![
+                    text("+").size(crate::style::text_size::SECTION),
+                    text("Choose liquidity market").size(crate::style::text_size::SMALL),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center)
+                .into()
+            };
+            let reference_button = button(reference_content)
+                .on_press(Message::PaneEvent(
+                    id,
+                    Event::ShowModal(Modal::GexLiquidityReference(
+                        MiniPanel::for_options_underlying(*underlying),
+                    )),
+                ))
+                .style(|theme, status| {
+                    style::button::modifier(
+                        theme,
+                        status,
+                        !matches!(self.modal, Some(Modal::GexLiquidityReference(_))),
+                    )
+                })
+                .height(widget::PANE_CONTROL_BTN_HEIGHT);
             top_left_buttons = top_left_buttons.push(
                 row![
                     pick_list(
@@ -946,9 +992,10 @@ impl State {
                     )
                     .text_size(crate::style::text_size::SECTION)
                     .width(Length::Fixed(82.0)),
-                    text(provider)
+                    text(gex_source)
                         .size(crate::style::text_size::SMALL)
                         .align_y(Alignment::Center),
+                    reference_button,
                 ]
                 .spacing(6)
                 .align_y(Alignment::Center),
@@ -3432,6 +3479,61 @@ mod tests {
         assert!(!depth_streams.contains(&old));
         state.reconcile_gex_liquidity_stream();
         assert_eq!(state.streams.ready_iter().expect("ready").count(), 1);
+    }
+
+    #[test]
+    fn native_gex_asset_can_select_and_attach_a_liquidity_provider() {
+        let mut state = gex_state(data::chart::gex::Config::default());
+        state.set_gex_liquidity_reference(None, None);
+        assert!(
+            state
+                .update(Event::GexAssetSelected(GexChartAsset::Eth))
+                .is_some()
+        );
+        assert!(
+            state
+                .update(Event::GexChartInteraction(
+                    crate::chart::gex::Message::SelectLiquidityReference,
+                ))
+                .is_some()
+        );
+        assert!(matches!(state.modal, Some(Modal::GexLiquidityReference(_))));
+
+        let reference = TickerInfo::new(
+            Ticker::new("ETHUSDT", Exchange::BybitLinear),
+            0.01,
+            0.001,
+            None,
+        );
+        assert!(matches!(
+            state.update(Event::MiniTickersListInteraction(
+                crate::modal::pane::mini_tickers_list::Message::RowSelected(
+                    crate::modal::pane::mini_tickers_list::RowSelection::Switch(reference),
+                ),
+            )),
+            Some(Effect::RefreshStreams)
+        ));
+        let Content::Gex {
+            chart,
+            liquidity_reference,
+            liquidity_reference_source,
+            ..
+        } = &state.content
+        else {
+            panic!("GEX content");
+        };
+        assert_eq!(*liquidity_reference, Some(reference));
+        assert_eq!(
+            *liquidity_reference_source,
+            Some(GexLiquidityReferenceSource::Manual)
+        );
+        assert_eq!(
+            chart.as_ref().and_then(GexChart::liquidity_reference),
+            Some(reference)
+        );
+        assert!(state.streams.ready_iter().expect("ready").any(|stream| {
+            matches!(stream, StreamKind::Depth { ticker_info, .. } if *ticker_info == reference)
+        }));
     }
 
     #[test]
