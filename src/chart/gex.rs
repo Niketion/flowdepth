@@ -162,7 +162,9 @@ impl GexChart {
         &mut self,
         quota: Option<exchange::options::quantwheel::QuantWheelQuota>,
     ) {
-        self.quantwheel_quota = quota;
+        // QuantWheel omits usage headers for some authenticated plans. Do not
+        // render an "unknown" allowance card that cannot help the user.
+        self.quantwheel_quota = quota.filter(|quota| quota.remaining.is_some());
     }
 
     pub fn config(&self) -> &Config {

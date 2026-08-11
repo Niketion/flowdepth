@@ -211,3 +211,37 @@ pub fn delete_server_token(url: &str) {
         ),
     }
 }
+
+// ── QuantWheel session (keychain) ──────────────────────────────────────
+
+const QUANTWHEEL_KEYCHAIN_SERVICE: &str = "flowsurface.quantwheel";
+const QUANTWHEEL_KEYCHAIN_ACCOUNT: &str = "https://quantwheel.com";
+
+fn quantwheel_entry() -> Result<keyring::Entry, keyring::Error> {
+    keyring::Entry::new(QUANTWHEEL_KEYCHAIN_SERVICE, QUANTWHEEL_KEYCHAIN_ACCOUNT)
+}
+
+pub fn load_quantwheel_session() -> Option<String> {
+    match quantwheel_entry().and_then(|entry| entry.get_password()) {
+        Ok(cookie) => Some(cookie),
+        Err(keyring::Error::NoEntry) => None,
+        Err(error) => {
+            log::warn!("Failed to read QuantWheel session from keychain: {error}");
+            None
+        }
+    }
+}
+
+pub fn save_quantwheel_session(cookie: &str) {
+    match quantwheel_entry().and_then(|entry| entry.set_password(cookie)) {
+        Ok(()) => log::info!("Stored QuantWheel session in keychain"),
+        Err(error) => log::warn!("Failed to store QuantWheel session in keychain: {error}"),
+    }
+}
+
+pub fn delete_quantwheel_session() {
+    match quantwheel_entry().and_then(|entry| entry.delete_credential()) {
+        Ok(()) | Err(keyring::Error::NoEntry) => {}
+        Err(error) => log::warn!("Failed to delete QuantWheel session from keychain: {error}"),
+    }
+}

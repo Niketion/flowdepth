@@ -947,6 +947,8 @@ impl State {
                 .as_ref()
                 .and_then(GexChart::liquidity_reference)
                 .or(*liquidity_reference);
+            let xau_reference_required =
+                *underlying == exchange::options::OptionsUnderlying::Gld && reference.is_none();
             let reference_content: Element<'_, Message> = if let Some(reference) = reference {
                 let (symbol, _) = reference.ticker.display_symbol_and_type();
                 row![
@@ -955,6 +957,14 @@ impl State {
                     text(format!("Liquidity · {} · {symbol}", reference.exchange()))
                         .size(crate::style::text_size::SMALL)
                         .wrapping(iced::widget::text::Wrapping::None),
+                ]
+                .spacing(4)
+                .align_y(Alignment::Center)
+                .into()
+            } else if xau_reference_required {
+                row![
+                    text("!").size(crate::style::text_size::SECTION),
+                    text("Required · select XAUT market").size(crate::style::text_size::SMALL),
                 ]
                 .spacing(4)
                 .align_y(Alignment::Center)
@@ -983,6 +993,21 @@ impl State {
                     )
                 })
                 .height(widget::PANE_CONTROL_BTN_HEIGHT);
+            let reference_button: Element<'_, Message> = if xau_reference_required {
+                iced::widget::tooltip(
+                    reference_button,
+                    container(text(
+                        "Required for XAU: choose an XAU/XAUT market whose live price is used to convert QuantWheel GLD option strikes.",
+                    ))
+                    .style(style::tooltip)
+                    .padding(8),
+                    tooltip::Position::Bottom,
+                )
+                .delay(widget::DEFAULT_TOOLTIP_DELAY)
+                .into()
+            } else {
+                reference_button.into()
+            };
             top_left_buttons = top_left_buttons.push(
                 row![
                     pick_list(
@@ -2436,14 +2461,24 @@ impl State {
                 )
             }
             Some(Modal::Settings) => {
-                let settings = column![
+                let settings_content = column![
                     settings_modal(),
-                    rule::horizontal(1.0).style(style::split_ruler),
-                    button(text("Reset view"))
-                        .width(Length::Fill)
-                        .on_press(Message::ReplacePane(pane)),
+                    container(
+                        column![
+                            rule::horizontal(1.0).style(style::split_ruler),
+                            button(text("Reset view"))
+                                .width(Length::Fill)
+                                .on_press(Message::ReplacePane(pane)),
+                        ]
+                        .spacing(12)
+                    )
+                    .padding(padding::right(28).bottom(28).left(28)),
                 ]
-                .spacing(12);
+                .spacing(0);
+                let settings = container(settings_content)
+                    .width(Length::Fill)
+                    .max_width(360)
+                    .style(style::chart_modal);
                 stack_modal(
                     base,
                     settings,

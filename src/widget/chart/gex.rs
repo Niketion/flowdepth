@@ -37,11 +37,16 @@ impl GexLayoutDensity {
 
 fn view_sized(chart: &gex::GexChart, density: GexLayoutDensity) -> Element<'_, gex::Message> {
     let Some(snapshot) = chart.snapshot() else {
-        let status = text(if chart.freshness() == GexFreshness::Error {
+        let status_message = if chart.underlying() == exchange::options::OptionsUnderlying::Gld
+            && chart.liquidity_reference().is_none()
+        {
+            "Select an XAU/XAUT liquidity market above to map the GLD option levels."
+        } else if chart.freshness() == GexFreshness::Error {
             "GEX data unavailable."
         } else {
             "Waiting for GEX data..."
-        });
+        };
+        let status = text(status_message);
         let mut content = column![status]
             .spacing(12)
             .align_x(Alignment::Center)
@@ -436,7 +441,17 @@ fn quantwheel_quota_card(
         None
     };
 
-    let badge = container(text("FREE · 5/DAY").size(9))
+    let badge_label = if quota.authenticated {
+        "SIGNED IN".to_owned()
+    } else {
+        format!("FREE · {}/DAY", quota.limit)
+    };
+    let info_text = if quota.authenticated {
+        "QuantWheel requests use the authenticated session stored in the Windows keychain. Account allowance and remaining usage are shown only when reported by the provider.".to_owned()
+    } else {
+        "QuantWheel documents 5 anonymous results per feature per day. Usage comes from the provider's x-ratelimit-remaining response header. QuantWheel does not currently return a reset timestamp, so 00:00 UTC is shown as an estimate.".to_owned()
+    };
+    let badge = container(text(badge_label).size(9))
         .padding([2, 6])
         .style(|theme: &Theme| {
             let palette = theme.extended_palette();
@@ -465,39 +480,57 @@ fn quantwheel_quota_card(
             .width(Length::Fill),
         badge,
         status,
-        info("QuantWheel documents 5 anonymous results per feature per day. Usage comes from the provider's x-ratelimit-remaining response header. QuantWheel does not currently return a reset timestamp, so 00:00 UTC is shown as an estimate.".to_owned()),
+        info(info_text),
     ]
     .spacing(6)
     .align_y(Alignment::Center);
 
     let mut meter = row![].spacing(4).width(Length::Fill);
-    for index in 0..quota.limit {
-        let filled = used.is_some_and(|used| index < used);
-        meter = meter.push(
-            container(space::horizontal())
-                .height(6)
-                .width(Length::FillPortion(1))
-                .style(move |theme: &Theme| quota_segment_style(theme, filled, exhausted)),
-        );
+    if !quota.limit_is_estimate {
+        for index in 0..quota.limit {
+            let filled = used.is_some_and(|used| index < used);
+            meter = meter.push(
+                container(space::horizontal())
+                    .height(6)
+                    .width(Length::FillPortion(1))
+                    .style(move |theme: &Theme| quota_segment_style(theme, filled, exhausted)),
+            );
+        }
     }
 
-    let used_value = used.map_or_else(|| "—".to_owned(), |value| value.to_string());
-    let usage = row![
-        text(used_value).size(26),
-        text(format!("/ {}", quota.limit))
-            .size(style::text_size::SECTION)
-            .style(|theme: &Theme| iced::widget::text::Style {
-                color: Some(theme.palette().text.scale_alpha(0.55)),
-            }),
-        space::horizontal(),
-        text("anonymous fetches used today")
-            .size(9)
-            .style(|theme: &Theme| iced::widget::text::Style {
-                color: Some(theme.palette().text.scale_alpha(0.62)),
-            }),
-    ]
-    .spacing(4)
-    .align_y(Alignment::End);
+    let usage_value = if quota.authenticated && quota.limit_is_estimate {
+        remaining
+    } else {
+        used
+    }
+    .map_or_else(|| "—".to_owned(), |value| value.to_string());
+    let usage_label = if quota.authenticated && quota.limit_is_estimate {
+        "account fetches remaining today"
+    } else if quota.authenticated {
+        "account fetches used today"
+    } else {
+        "anonymous fetches used today"
+    };
+    let mut usage = row![text(usage_value).size(26)].spacing(4);
+    if !quota.limit_is_estimate {
+        usage = usage.push(
+            text(format!("/ {}", quota.limit))
+                .size(style::text_size::SECTION)
+                .style(|theme: &Theme| iced::widget::text::Style {
+                    color: Some(theme.palette().text.scale_alpha(0.55)),
+                }),
+        );
+    }
+    let usage = usage
+        .push(space::horizontal())
+        .push(
+            text(usage_label)
+                .size(9)
+                .style(|theme: &Theme| iced::widget::text::Style {
+                    color: Some(theme.palette().text.scale_alpha(0.62)),
+                }),
+        )
+        .align_y(Alignment::End);
 
     let mut content = column![heading, usage, meter]
         .spacing(7)

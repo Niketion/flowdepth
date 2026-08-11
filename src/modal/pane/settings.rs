@@ -35,7 +35,6 @@ where
         .width(Length::Shrink)
         .padding(28)
         .max_width(max_width)
-        .style(style::chart_modal)
         .into()
 }
 

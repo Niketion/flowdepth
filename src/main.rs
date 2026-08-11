@@ -735,6 +735,7 @@ impl Flowsurface {
         .ok();
         let quantwheel_gex_client = exchange::options::quantwheel::QuantWheelGexClient::new(
             saved_state.network.proxy.as_ref(),
+            saved_state.network.quantwheel_session_cookie.as_deref(),
         )
         .map_err(|error| {
             log::error!("QuantWheel GEX client initialization failed: {error}");
@@ -1173,8 +1174,9 @@ impl Flowsurface {
                 let quantwheel_tasks = if let Some(client) = self.quantwheel_gex_client.clone()
                     && self.gex_coordinator.due_quantwheel_fetch(gex_now, true)
                 {
+                    let expiry_filter = self.gex_coordinator.quantwheel_expiry_filter();
                     vec![Task::perform(
-                        connector::gex::execute_quantwheel_fetch(client),
+                        connector::gex::execute_quantwheel_fetch(client, expiry_filter),
                         Message::QuantWheelGexFetchCompleted,
                     )]
                 } else {
@@ -1916,6 +1918,75 @@ impl Flowsurface {
                             active_windows,
                             Message::SaveStateRequested,
                         );
+                    }
+                    Some(network_editor::Action::RequestQuantWheelCode(email)) => {
+                        let Some(client) = self.quantwheel_gex_client.clone() else {
+                            return Task::done(Message::NetworkEditor(
+                                network_editor::Message::QuantWheel(
+                                    network_editor::QuantWheelMsg::CodeRequested(Err(
+                                        "QuantWheel client is unavailable".to_owned(),
+                                    )),
+                                ),
+                            ));
+                        };
+                        return Task::perform(
+                            async move {
+                                client
+                                    .request_login_code(&email)
+                                    .await
+                                    .map_err(|error| error.to_string())
+                            },
+                            |result| {
+                                Message::NetworkEditor(network_editor::Message::QuantWheel(
+                                    network_editor::QuantWheelMsg::CodeRequested(result),
+                                ))
+                            },
+                        );
+                    }
+                    Some(network_editor::Action::VerifyQuantWheelCode { email, code }) => {
+                        let Some(client) = self.quantwheel_gex_client.clone() else {
+                            return Task::done(Message::NetworkEditor(
+                                network_editor::Message::QuantWheel(
+                                    network_editor::QuantWheelMsg::LoginCompleted(Err(
+                                        "QuantWheel client is unavailable".to_owned(),
+                                    )),
+                                ),
+                            ));
+                        };
+                        return Task::perform(
+                            async move {
+                                client
+                                    .verify_login_code(&email, &code)
+                                    .await
+                                    .map_err(|error| error.to_string())
+                            },
+                            |result| {
+                                Message::NetworkEditor(network_editor::Message::QuantWheel(
+                                    network_editor::QuantWheelMsg::LoginCompleted(result),
+                                ))
+                            },
+                        );
+                    }
+                    Some(network_editor::Action::QuantWheelSessionChanged(session_cookie)) => {
+                        if let Some(cookie) = session_cookie.as_deref() {
+                            data::config::auth::save_quantwheel_session(cookie);
+                        } else {
+                            data::config::auth::delete_quantwheel_session();
+                        }
+                        self.network_config.quantwheel_session_cookie = session_cookie.clone();
+                        self.quantwheel_gex_client =
+                            exchange::options::quantwheel::QuantWheelGexClient::new(
+                                self.network_config.proxy.as_ref(),
+                                session_cookie.as_deref(),
+                            )
+                            .map_err(|error| {
+                                log::error!(
+                                    "QuantWheel GEX client reinitialization failed: {error}"
+                                );
+                                error
+                            })
+                            .ok();
+                        self.gex_coordinator.reconnect();
                     }
                     Some(network_editor::Action::Exit) => {
                         self.sidebar.set_menu(Some(sidebar::Menu::Settings));

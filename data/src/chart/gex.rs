@@ -914,7 +914,12 @@ pub fn map_proxy_snapshot(
     Some(mapped)
 }
 
-pub fn quantwheel_snapshot(source: QuantWheelGexSnapshot, calculated_at: UnixMs) -> GexSnapshot {
+pub fn quantwheel_snapshot(
+    source: QuantWheelGexSnapshot,
+    expiry_filter: GexExpiryFilter,
+    expiration_count: usize,
+    calculated_at: UnixMs,
+) -> GexSnapshot {
     let strikes = source
         .levels
         .iter()
@@ -926,7 +931,7 @@ pub fn quantwheel_snapshot(source: QuantWheelGexSnapshot, calculated_at: UnixMs)
             absolute_gamma_1pct: level.call_gex.abs() + level.put_gex.abs(),
             call_open_interest: level.call_open_interest,
             put_open_interest: level.put_open_interest,
-            expiration_count: 1,
+            expiration_count,
             gamma_provenance: GexGammaProvenance::Native,
         })
         .collect::<Vec<_>>();
@@ -940,7 +945,7 @@ pub fn quantwheel_snapshot(source: QuantWheelGexSnapshot, calculated_at: UnixMs)
         provider: source.provider,
         underlying: source.underlying,
         model: GexSignModel::CallPutOiProxy,
-        expiry_filter: GexExpiryFilter::All,
+        expiry_filter,
         gamma_source: GexGammaSource::ProviderNativePreferred,
         gamma_provenance: GexGammaProvenance::Native,
         source_spot: source.stock_price,

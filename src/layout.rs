@@ -632,6 +632,9 @@ fn saved_state_from_config(state: data::State) -> SavedState {
     {
         network.server_auth_token = data::config::auth::load_server_token(url);
     }
+    if network.quantwheel_session_cookie.is_none() {
+        network.quantwheel_session_cookie = data::config::auth::load_quantwheel_session();
+    }
 
     crate::connector::fetcher::set_trade_fetch_mode(network.trade_fetch_mode.clone());
     exchange::unit::qty::set_preferred_currency(state.size_in_quote_ccy);

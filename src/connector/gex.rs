@@ -11,7 +11,9 @@ use exchange::{
         deribit::{DeribitError, DeribitOptionsClient},
         derive::{DeriveMakerTrade, DeriveOptionInstrument, DeriveOptionsClient},
         gex_monitor::{GexMonitorClient, GexProxyHistoryPoint, GexProxyHistoryResponse},
-        quantwheel::{QuantWheelGexClient, QuantWheelGexSnapshot, QuantWheelQuota},
+        quantwheel::{
+            QuantWheelExpirySelection, QuantWheelGexClient, QuantWheelGexSnapshot, QuantWheelQuota,
+        },
     },
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -34,9 +36,41 @@ pub const DERIVE_INITIAL_BACKFILL_MS: u64 = 2 * 60 * 60 * 1_000;
 
 #[derive(Debug, Clone)]
 pub struct QuantWheelFetchCompletion {
+    pub expiry_filter: GexExpiryFilter,
+    pub expiration_count: usize,
     pub result: Result<QuantWheelGexSnapshot, Arc<str>>,
     pub quota: Option<QuantWheelQuota>,
     pub rate_limited: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct GexConsumer {
+    pub source: GexSource,
+    pub expiry_filter: GexExpiryFilter,
+}
+
+impl From<GexSource> for GexConsumer {
+    fn from(source: GexSource) -> Self {
+        Self {
+            source,
+            expiry_filter: GexExpiryFilter::SevenDays,
+        }
+    }
+}
+
+impl From<OptionsUnderlying> for GexConsumer {
+    fn from(underlying: OptionsUnderlying) -> Self {
+        GexSource::from(underlying).into()
+    }
+}
+
+impl From<(GexSource, GexExpiryFilter)> for GexConsumer {
+    fn from((source, expiry_filter): (GexSource, GexExpiryFilter)) -> Self {
+        Self {
+            source,
+            expiry_filter,
+        }
+    }
 }
 pub const DERIVE_FETCH_OVERLAP_MS: u64 = 10 * 1_000;
 pub const DERIVE_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
@@ -44,6 +78,26 @@ const FAILURE_BACKOFF_BASE_MS: u64 = 5_000;
 const FAILURE_BACKOFF_MAX_MS: u64 = 2 * 60 * 1_000;
 const CACHE_SCHEMA: u32 = 1;
 const CACHE_FILENAME: &str = "gex_option_chain_v1.json";
+
+fn expiry_filter_days(filter: GexExpiryFilter) -> u16 {
+    match filter {
+        GexExpiryFilter::NextExpiry => 0,
+        GexExpiryFilter::OneDay => 1,
+        GexExpiryFilter::TwoDays => 2,
+        GexExpiryFilter::ThreeDays => 3,
+        GexExpiryFilter::SevenDays => 7,
+        GexExpiryFilter::ThirtyDays => 30,
+        GexExpiryFilter::All => u16::MAX,
+    }
+}
+
+fn quantwheel_expiry_selection(filter: GexExpiryFilter) -> QuantWheelExpirySelection {
+    match filter {
+        GexExpiryFilter::NextExpiry => QuantWheelExpirySelection::NextExpiry,
+        GexExpiryFilter::All => QuantWheelExpirySelection::All,
+        filter => QuantWheelExpirySelection::ThroughDays(expiry_filter_days(filter)),
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
 pub struct OptionsChainKey {
@@ -180,6 +234,7 @@ pub struct GexDataCoordinator {
     force_refresh: FxHashSet<OptionsChainKey>,
     last_freshness: FxHashMap<OptionsChainKey, GexFreshness>,
     quantwheel_subscribers: usize,
+    quantwheel_expiry_filter: GexExpiryFilter,
     quantwheel_snapshot: Option<CachedQuantWheelSnapshot>,
     quantwheel_mapped_history: VecDeque<Arc<GexSnapshot>>,
     quantwheel_in_flight: bool,
@@ -232,6 +287,7 @@ impl GexDataCoordinator {
             force_refresh: FxHashSet::default(),
             last_freshness: FxHashMap::default(),
             quantwheel_subscribers: 0,
+            quantwheel_expiry_filter: GexExpiryFilter::SevenDays,
             quantwheel_snapshot: None,
             quantwheel_mapped_history: VecDeque::new(),
             quantwheel_in_flight: false,
@@ -272,12 +328,13 @@ impl GexDataCoordinator {
     pub fn set_consumers<I>(&mut self, consumers: I)
     where
         I: IntoIterator,
-        I::Item: Into<GexSource>,
+        I::Item: Into<GexConsumer>,
     {
         let mut next = FxHashMap::default();
         let mut quantwheel_subscribers = 0usize;
-        for source in consumers.into_iter().map(Into::into) {
-            match source {
+        let mut quantwheel_expiry_filter = None;
+        for consumer in consumers.into_iter().map(Into::into) {
+            match consumer.source {
                 GexSource::Native {
                     provider: OptionsProvider::Deribit,
                     underlying,
@@ -290,7 +347,18 @@ impl GexDataCoordinator {
                     provider: OptionsProvider::QuantWheel,
                     source_symbol: OptionsUnderlying::Gld,
                     ..
-                } => quantwheel_subscribers = quantwheel_subscribers.saturating_add(1),
+                } => {
+                    quantwheel_subscribers = quantwheel_subscribers.saturating_add(1);
+                    quantwheel_expiry_filter = Some(match quantwheel_expiry_filter {
+                        Some(current)
+                            if expiry_filter_days(current)
+                                >= expiry_filter_days(consumer.expiry_filter) =>
+                        {
+                            current
+                        }
+                        _ => consumer.expiry_filter,
+                    });
+                }
                 _ => {}
             }
         }
@@ -303,9 +371,15 @@ impl GexDataCoordinator {
                 self.derive_force_trades.insert(key.underlying);
             }
         }
-        if quantwheel_subscribers > 0 && self.quantwheel_subscribers == 0 {
+        let next_quantwheel_filter =
+            quantwheel_expiry_filter.unwrap_or(self.quantwheel_expiry_filter);
+        if quantwheel_subscribers > 0
+            && (self.quantwheel_subscribers == 0
+                || self.quantwheel_expiry_filter != next_quantwheel_filter)
+        {
             self.quantwheel_force_refresh = true;
         }
+        self.quantwheel_expiry_filter = next_quantwheel_filter;
         self.quantwheel_subscribers = quantwheel_subscribers;
         self.subscribers = next;
     }
@@ -373,12 +447,16 @@ impl GexDataCoordinator {
         }
     }
 
+    pub fn quantwheel_expiry_filter(&self) -> GexExpiryFilter {
+        self.quantwheel_expiry_filter
+    }
+
     pub fn complete_quantwheel(
         &mut self,
         result: Result<QuantWheelGexSnapshot, Arc<str>>,
         now: UnixMs,
     ) {
-        self.complete_quantwheel_with_metadata(result, None, false, now);
+        self.complete_quantwheel_with_metadata(result, 1, None, false, now);
     }
 
     pub fn complete_quantwheel_fetch(
@@ -386,8 +464,14 @@ impl GexDataCoordinator {
         completion: QuantWheelFetchCompletion,
         now: UnixMs,
     ) {
+        if completion.expiry_filter != self.quantwheel_expiry_filter {
+            self.quantwheel_in_flight = false;
+            self.quantwheel_force_refresh = self.quantwheel_subscribers > 0;
+            return;
+        }
         self.complete_quantwheel_with_metadata(
             completion.result,
+            completion.expiration_count,
             completion.quota,
             completion.rate_limited,
             now,
@@ -397,6 +481,7 @@ impl GexDataCoordinator {
     fn complete_quantwheel_with_metadata(
         &mut self,
         result: Result<QuantWheelGexSnapshot, Arc<str>>,
+        expiration_count: usize,
         quota: Option<QuantWheelQuota>,
         rate_limited: bool,
         now: UnixMs,
@@ -408,7 +493,12 @@ impl GexDataCoordinator {
         }
         match result {
             Ok(source) => {
-                let source = Arc::new(quantwheel_snapshot(source, now));
+                let source = Arc::new(quantwheel_snapshot(
+                    source,
+                    self.quantwheel_expiry_filter,
+                    expiration_count,
+                    now,
+                ));
                 let cutoff = now.saturating_sub(24 * 60 * 60 * 1_000);
                 while self
                     .quantwheel_mapped_history
@@ -1500,14 +1590,24 @@ pub async fn execute_proxy_fetch(
     (underlying, result)
 }
 
-pub async fn execute_quantwheel_fetch(client: QuantWheelGexClient) -> QuantWheelFetchCompletion {
-    match client.fetch_gex().await {
+pub async fn execute_quantwheel_fetch(
+    client: QuantWheelGexClient,
+    expiry_filter: GexExpiryFilter,
+) -> QuantWheelFetchCompletion {
+    match client
+        .fetch_gex(quantwheel_expiry_selection(expiry_filter))
+        .await
+    {
         Ok(response) => QuantWheelFetchCompletion {
+            expiry_filter,
+            expiration_count: response.expirations.len(),
             result: Ok(response.snapshot),
             quota: Some(response.quota),
             rate_limited: false,
         },
         Err(error) => QuantWheelFetchCompletion {
+            expiry_filter,
+            expiration_count: 0,
             quota: error.quota(),
             rate_limited: error.is_rate_limited(),
             result: Err(Arc::from(error.to_string())),
@@ -1780,12 +1880,16 @@ mod tests {
         assert!(value.due_quantwheel_fetch(now, true));
         value.complete_quantwheel_fetch(
             QuantWheelFetchCompletion {
+                expiry_filter: GexExpiryFilter::SevenDays,
+                expiration_count: 0,
                 result: Err("daily limit reached".into()),
                 quota: Some(QuantWheelQuota {
                     limit: 5,
+                    limit_is_estimate: false,
                     remaining: Some(0),
                     reset_at,
                     reset_is_estimate: true,
+                    authenticated: false,
                 }),
                 rate_limited: true,
             },

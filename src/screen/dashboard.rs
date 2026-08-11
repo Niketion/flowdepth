@@ -285,7 +285,7 @@ impl Dashboard {
         changed
     }
 
-    pub fn gex_consumers(&self) -> Vec<exchange::options::GexSource> {
+    pub fn gex_consumers(&self) -> Vec<crate::connector::gex::GexConsumer> {
         self.panes
             .iter()
             .map(|(_, state)| state)
@@ -297,18 +297,25 @@ impl Dashboard {
             .filter_map(|state| match &state.content {
                 pane::Content::Gex {
                     underlying,
-                    chart: Some(_),
+                    chart: Some(chart),
                     unsupported: false,
                     ..
-                } => Some(exchange::options::GexSource::for_chart_underlying(
-                    *underlying,
-                )),
-                pane::Content::Kline { indicators, .. }
-                    if indicators.contains(&data::chart::indicator::KlineIndicator::GexLevels) =>
-                {
-                    state
+                } => Some(crate::connector::gex::GexConsumer {
+                    source: exchange::options::GexSource::for_chart_underlying(*underlying),
+                    expiry_filter: chart.config().expiry_filter,
+                }),
+                pane::Content::Kline {
+                    chart: Some(chart),
+                    indicators,
+                    ..
+                } if indicators.contains(&data::chart::indicator::KlineIndicator::GexLevels) => {
+                    let source = state
                         .stream_pair()
-                        .and_then(|ticker| exchange::options::resolve_gex_source(ticker.ticker))
+                        .and_then(|ticker| exchange::options::resolve_gex_source(ticker.ticker))?;
+                    Some(crate::connector::gex::GexConsumer {
+                        source,
+                        expiry_filter: chart.visual_config().gex_levels().expiry_filter,
+                    })
                 }
                 _ => None,
             })

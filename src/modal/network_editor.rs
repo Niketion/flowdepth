@@ -17,6 +17,12 @@ pub enum Action {
         url: Option<String>,
         auth_token: Option<String>,
     },
+    RequestQuantWheelCode(String),
+    VerifyQuantWheelCode {
+        email: String,
+        code: String,
+    },
+    QuantWheelSessionChanged(Option<String>),
     Exit,
 }
 
@@ -31,6 +37,7 @@ enum ConfirmState {
 pub enum Message {
     Proxy(ProxyMsg),
     Fetch(FetchMsg),
+    QuantWheel(QuantWheelMsg),
     GoBack,
 }
 
@@ -38,6 +45,7 @@ pub enum Message {
 pub struct NetworkEditor {
     proxy: ProxyForm,
     fetch: FetchForm,
+    quantwheel: QuantWheelForm,
     confirm: ConfirmState,
     error: Option<String>,
     /// Snapshot of the effective config when the editor was opened or last
@@ -61,6 +69,7 @@ impl NetworkEditor {
                 network.server_url.as_deref(),
                 network.server_auth_token.as_deref(),
             ),
+            quantwheel: QuantWheelForm::new(network.quantwheel_session_cookie.is_some()),
             confirm: ConfirmState::Idle,
             error: None,
             effective: network.clone(),
@@ -113,6 +122,7 @@ impl NetworkEditor {
                 }
                 action
             }
+            Message::QuantWheel(msg) => self.quantwheel.update(msg, &mut self.error),
         }
     }
 
@@ -140,8 +150,15 @@ impl NetworkEditor {
                 network.server_auth_token.as_deref(),
             )
             .map(Message::Fetch);
+        let quantwheel_settings = self.quantwheel.view().map(Message::QuantWheel);
 
-        let mut content = column![modal_header, fetch_settings, proxy_settings].spacing(12);
+        let mut content = column![
+            modal_header,
+            quantwheel_settings,
+            fetch_settings,
+            proxy_settings
+        ]
+        .spacing(12);
 
         if self.pending_apply.is_some() {
             let banner = container(
@@ -185,6 +202,161 @@ impl NetworkEditor {
             .padding(24)
             .style(style::dashboard_modal)
             .into()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct QuantWheelForm {
+    email: String,
+    code: String,
+    code_sent: bool,
+    busy: bool,
+    authenticated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum QuantWheelMsg {
+    EmailChanged(String),
+    CodeChanged(String),
+    RequestCode,
+    VerifyCode,
+    Logout,
+    CodeRequested(Result<(), String>),
+    LoginCompleted(Result<String, String>),
+}
+
+impl QuantWheelForm {
+    fn new(authenticated: bool) -> Self {
+        Self {
+            email: String::new(),
+            code: String::new(),
+            code_sent: false,
+            busy: false,
+            authenticated,
+        }
+    }
+
+    fn update(&mut self, message: QuantWheelMsg, error: &mut Option<String>) -> Option<Action> {
+        match message {
+            QuantWheelMsg::EmailChanged(value) => {
+                self.email = value;
+                *error = None;
+            }
+            QuantWheelMsg::CodeChanged(value) => {
+                self.code = value.chars().filter(char::is_ascii_digit).take(6).collect();
+                *error = None;
+            }
+            QuantWheelMsg::RequestCode => {
+                let email = self.email.trim().to_ascii_lowercase();
+                if email.is_empty() || !email.contains('@') {
+                    *error = Some("Enter a valid QuantWheel email".to_owned());
+                } else {
+                    self.busy = true;
+                    *error = None;
+                    return Some(Action::RequestQuantWheelCode(email));
+                }
+            }
+            QuantWheelMsg::VerifyCode => {
+                if self.code.len() != 6 {
+                    *error = Some("Enter the 6-digit QuantWheel code".to_owned());
+                } else {
+                    self.busy = true;
+                    *error = None;
+                    return Some(Action::VerifyQuantWheelCode {
+                        email: self.email.trim().to_ascii_lowercase(),
+                        code: self.code.clone(),
+                    });
+                }
+            }
+            QuantWheelMsg::Logout => {
+                self.authenticated = false;
+                self.code_sent = false;
+                self.code.clear();
+                *error = None;
+                return Some(Action::QuantWheelSessionChanged(None));
+            }
+            QuantWheelMsg::CodeRequested(result) => {
+                self.busy = false;
+                match result {
+                    Ok(()) => self.code_sent = true,
+                    Err(message) => *error = Some(message),
+                }
+            }
+            QuantWheelMsg::LoginCompleted(result) => {
+                self.busy = false;
+                match result {
+                    Ok(cookie) => {
+                        self.authenticated = true;
+                        self.code_sent = false;
+                        self.code.clear();
+                        *error = None;
+                        return Some(Action::QuantWheelSessionChanged(Some(cookie)));
+                    }
+                    Err(message) => *error = Some(message),
+                }
+            }
+        }
+        None
+    }
+
+    fn view(&self) -> Element<'_, QuantWheelMsg> {
+        let status = if self.authenticated {
+            "Authenticated session stored securely"
+        } else if self.code_sent {
+            "Code sent — check your email"
+        } else {
+            "Anonymous access (5 results/day)"
+        };
+        let mut form = column![text(status).size(crate::style::text_size::SMALL)].spacing(6);
+        if self.authenticated {
+            form = form.push(button("Sign out").on_press(QuantWheelMsg::Logout));
+        } else {
+            form = form.push(
+                text_input("QuantWheel email", &self.email)
+                    .on_input(QuantWheelMsg::EmailChanged)
+                    .on_submit(QuantWheelMsg::RequestCode),
+            );
+            if self.code_sent {
+                form = form.push(
+                    row![
+                        text_input("6-digit code", &self.code)
+                            .on_input(QuantWheelMsg::CodeChanged)
+                            .on_submit(QuantWheelMsg::VerifyCode),
+                        button(if self.busy {
+                            "Signing in…"
+                        } else {
+                            "Sign in"
+                        })
+                        .on_press_maybe((!self.busy).then_some(QuantWheelMsg::VerifyCode)),
+                    ]
+                    .spacing(6),
+                );
+            } else {
+                form = form.push(
+                    button(if self.busy {
+                        "Sending…"
+                    } else {
+                        "Send login code"
+                    })
+                    .on_press_maybe((!self.busy).then_some(QuantWheelMsg::RequestCode)),
+                );
+            }
+        }
+        column![
+            row![
+                iced::widget::rule::horizontal(1),
+                text("QuantWheel").size(crate::style::text_size::SECTION),
+                iced::widget::rule::horizontal(1),
+            ]
+            .spacing(4)
+            .align_y(iced::Alignment::Center),
+            container(form)
+                .width(iced::Length::Fill)
+                .style(style::modal_container)
+                .padding(8),
+        ]
+        .spacing(8)
+        .into()
     }
 }
 

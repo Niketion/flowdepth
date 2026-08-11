@@ -1,12 +1,18 @@
 use super::{OptionsProvider, OptionsUnderlying};
 use crate::{UnixMs, adapter};
-use chrono::{NaiveDate, Utc};
-use reqwest::{Client, header::HeaderMap};
+use chrono::{Days, NaiveDate, Utc};
+use reqwest::{
+    Client,
+    cookie::{CookieStore, Jar},
+    header::HeaderMap,
+};
 use serde::Deserialize;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use thiserror::Error;
 
 const PRODUCTION_BASE_URL: &str = "https://quantwheel.com/api/tools/gex";
+const PRODUCTION_EXPIRATIONS_URL: &str = "https://quantwheel.com/api/options/expirations";
+const PRODUCTION_ORIGIN: &str = "https://quantwheel.com";
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// QuantWheel's public pricing and GEX pages advertise five anonymous results
@@ -17,9 +23,11 @@ const DAY_MS: u64 = 24 * 60 * 60 * 1_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuantWheelQuota {
     pub limit: u16,
+    pub limit_is_estimate: bool,
     pub remaining: Option<u16>,
     pub reset_at: UnixMs,
     pub reset_is_estimate: bool,
+    pub authenticated: bool,
 }
 
 impl QuantWheelQuota {
@@ -28,7 +36,10 @@ impl QuantWheelQuota {
             .map(|remaining| self.limit.saturating_sub(remaining.min(self.limit)))
     }
 
-    fn from_headers(headers: &HeaderMap, now: UnixMs) -> Self {
+    fn from_headers(headers: &HeaderMap, now: UnixMs, authenticated: bool) -> Self {
+        let reported_limit =
+            header_u64(headers, "x-ratelimit-limit").and_then(|value| u16::try_from(value).ok());
+        let limit = reported_limit.unwrap_or(ANONYMOUS_DAILY_GEX_LIMIT);
         let remaining = header_u64(headers, "x-ratelimit-remaining")
             .and_then(|value| u16::try_from(value).ok());
         let explicit_reset = header_u64(headers, "x-ratelimit-reset").map(|value| {
@@ -46,10 +57,12 @@ impl QuantWheelQuota {
             .or(retry_after)
             .unwrap_or_else(|| next_utc_midnight(now));
         Self {
-            limit: ANONYMOUS_DAILY_GEX_LIMIT,
+            limit,
+            limit_is_estimate: authenticated && reported_limit.is_none(),
             remaining,
             reset_at,
             reset_is_estimate: explicit_reset.is_none() && retry_after.is_none(),
+            authenticated,
         }
     }
 }
@@ -70,7 +83,9 @@ fn next_utc_midnight(now: UnixMs) -> UnixMs {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantWheelConfig {
-    pub expiration: NaiveDate,
+    /// Optional deterministic override used by controlled integrations. The
+    /// production client discovers valid GLD expirations from QuantWheel.
+    pub expiration_override: Option<NaiveDate>,
     pub delta_range: String,
     pub formula: String,
 }
@@ -78,11 +93,18 @@ pub struct QuantWheelConfig {
 impl Default for QuantWheelConfig {
     fn default() -> Self {
         Self {
-            expiration: Utc::now().date_naive(),
+            expiration_override: None,
             delta_range: "0.97".to_owned(),
             formula: "nominal".to_owned(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum QuantWheelExpirySelection {
+    NextExpiry,
+    ThroughDays(u16),
+    All,
 }
 
 #[derive(Debug, Error)]
@@ -103,6 +125,10 @@ pub enum QuantWheelError {
     EmptySnapshot,
     #[error("QuantWheel returned invalid {field}: {value}")]
     InvalidNumber { field: &'static str, value: f64 },
+    #[error("QuantWheel returned no usable GLD expirations")]
+    NoExpirations,
+    #[error("QuantWheel authentication failed: {0}")]
+    Auth(String),
 }
 
 impl QuantWheelError {
@@ -122,18 +148,32 @@ impl QuantWheelError {
 pub struct QuantWheelGexResponse {
     pub snapshot: QuantWheelGexSnapshot,
     pub quota: QuantWheelQuota,
+    pub expirations: Arc<[NaiveDate]>,
 }
 
 #[derive(Debug, Clone)]
 pub struct QuantWheelGexClient {
     client: Client,
+    cookie_jar: Arc<Jar>,
     base_url: String,
+    expirations_url: String,
+    origin_url: reqwest::Url,
     config: QuantWheelConfig,
 }
 
 impl QuantWheelGexClient {
-    pub fn new(proxy: Option<&adapter::Proxy>) -> Result<Self, QuantWheelError> {
-        Self::with_base_url(PRODUCTION_BASE_URL, QuantWheelConfig::default(), proxy)
+    pub fn new(
+        proxy: Option<&adapter::Proxy>,
+        session_cookie: Option<&str>,
+    ) -> Result<Self, QuantWheelError> {
+        Self::with_urls(
+            PRODUCTION_BASE_URL,
+            PRODUCTION_EXPIRATIONS_URL,
+            PRODUCTION_ORIGIN,
+            QuantWheelConfig::default(),
+            proxy,
+            session_cookie,
+        )
     }
 
     pub fn with_base_url(
@@ -141,27 +181,77 @@ impl QuantWheelGexClient {
         config: QuantWheelConfig,
         proxy: Option<&adapter::Proxy>,
     ) -> Result<Self, QuantWheelError> {
+        let base_url = base_url.into();
+        Self::with_urls(
+            base_url.clone(),
+            base_url.clone(),
+            &base_url,
+            config,
+            proxy,
+            None,
+        )
+    }
+
+    fn with_urls(
+        base_url: impl Into<String>,
+        expirations_url: impl Into<String>,
+        origin_url: &str,
+        config: QuantWheelConfig,
+        proxy: Option<&adapter::Proxy>,
+        session_cookie: Option<&str>,
+    ) -> Result<Self, QuantWheelError> {
+        let origin_url = reqwest::Url::parse(origin_url)
+            .map_err(|error| QuantWheelError::Auth(error.to_string()))?;
+        let cookie_jar = Arc::new(Jar::default());
+        if let Some(cookie) = session_cookie.filter(|cookie| !cookie.trim().is_empty()) {
+            cookie_jar.add_cookie_str(cookie, &origin_url);
+        }
         let builder = Client::builder()
             .connect_timeout(HTTP_CONNECT_TIMEOUT)
-            .timeout(HTTP_REQUEST_TIMEOUT);
+            .timeout(HTTP_REQUEST_TIMEOUT)
+            .cookie_provider(cookie_jar.clone());
         let client = adapter::proxy::try_apply_proxy(builder, proxy)
             .build()
             .map_err(QuantWheelError::Client)?;
         Ok(Self {
             client,
+            cookie_jar,
             base_url: base_url.into(),
+            expirations_url: expirations_url.into(),
+            origin_url,
             config,
         })
     }
 
-    pub async fn fetch_gex(&self) -> Result<QuantWheelGexResponse, QuantWheelError> {
-        log::info!("GEX FetchStarted kind=snapshot underlying=GLD provider=QuantWheel");
+    pub async fn fetch_gex(
+        &self,
+        selection: QuantWheelExpirySelection,
+    ) -> Result<QuantWheelGexResponse, QuantWheelError> {
+        let expirations = if let Some(expiration) = self.config.expiration_override {
+            vec![expiration]
+        } else {
+            let available = self.fetch_expirations().await?;
+            select_expirations(&available, Utc::now().date_naive(), selection)?
+        };
+        let expiration_query = expirations
+            .iter()
+            .map(NaiveDate::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        log::info!(
+            "GEX FetchStarted kind=snapshot underlying=GLD provider=QuantWheel auth={} selection={selection:?} expirations={expiration_query}",
+            if self.session_cookie().is_some() {
+                "session"
+            } else {
+                "anonymous"
+            }
+        );
         let response = self
             .client
             .get(&self.base_url)
             .query(&[
                 ("ticker", "GLD"),
-                ("expirations", &self.config.expiration.to_string()),
+                ("expirations", expiration_query.as_str()),
                 ("deltaRange", self.config.delta_range.as_str()),
                 ("formula", self.config.formula.as_str()),
             ])
@@ -169,7 +259,9 @@ impl QuantWheelGexClient {
             .await
             .map_err(QuantWheelError::Request)?;
         let status = response.status();
-        let mut quota = QuantWheelQuota::from_headers(response.headers(), UnixMs::now());
+        let authenticated = self.session_cookie().is_some();
+        let mut quota =
+            QuantWheelQuota::from_headers(response.headers(), UnixMs::now(), authenticated);
         if status.as_u16() == 429 && quota.remaining.is_none() {
             quota.remaining = Some(0);
         }
@@ -185,12 +277,216 @@ impl QuantWheelGexClient {
             serde_json::from_str(&body).map_err(QuantWheelError::Decode)?;
         let snapshot = dto.validate(UnixMs::now())?;
         log::info!(
-            "GEX SnapshotRefreshed underlying=GLD provider=QuantWheel levels={} observed_at={}",
+            "GEX SnapshotRefreshed underlying=GLD provider=QuantWheel levels={} expirations={} observed_at={}",
             snapshot.levels.len(),
+            expiration_query,
             snapshot.observed_at
         );
-        Ok(QuantWheelGexResponse { snapshot, quota })
+        Ok(QuantWheelGexResponse {
+            snapshot,
+            quota,
+            expirations: expirations.into(),
+        })
     }
+
+    async fn fetch_expirations(&self) -> Result<Vec<NaiveDate>, QuantWheelError> {
+        let response = self
+            .client
+            .get(&self.expirations_url)
+            .query(&[("ticker", "GLD")])
+            .send()
+            .await
+            .map_err(QuantWheelError::Request)?;
+        let status = response.status();
+        let body = response.text().await.map_err(QuantWheelError::Request)?;
+        if !status.is_success() {
+            return Err(QuantWheelError::Auth(format!(
+                "expiration discovery returned HTTP {}: {}",
+                status.as_u16(),
+                body.chars().take(256).collect::<String>()
+            )));
+        }
+        let dto: QuantWheelExpirationsDto =
+            serde_json::from_str(&body).map_err(QuantWheelError::Decode)?;
+        let mut expirations = dto
+            .expirations
+            .into_iter()
+            .filter_map(|value| NaiveDate::parse_from_str(&value, "%Y-%m-%d").ok())
+            .collect::<Vec<_>>();
+        expirations.sort_unstable();
+        expirations.dedup();
+        Ok(expirations)
+    }
+
+    pub async fn request_login_code(&self, email: &str) -> Result<(), QuantWheelError> {
+        let email = email.trim().to_ascii_lowercase();
+        if email.is_empty() {
+            return Err(QuantWheelError::Auth("email is required".to_owned()));
+        }
+        let validation = self
+            .client
+            .post(self.origin_url.join("/api/auth/validate-email").unwrap())
+            .json(&serde_json::json!({ "email": email }))
+            .send()
+            .await
+            .map_err(QuantWheelError::Request)?;
+        if !validation.status().is_success() {
+            return Err(QuantWheelError::Auth(response_message(validation).await));
+        }
+        let csrf: QuantWheelCsrfDto = self
+            .client
+            .get(self.origin_url.join("/api/auth/csrf").unwrap())
+            .send()
+            .await
+            .map_err(QuantWheelError::Request)?
+            .json()
+            .await
+            .map_err(QuantWheelError::Request)?;
+        let response = self
+            .client
+            .post(self.origin_url.join("/api/auth/signin/resend").unwrap())
+            .header("X-Auth-Return-Redirect", "1")
+            .form(&[
+                ("email", email.as_str()),
+                ("csrfToken", csrf.csrf_token.as_str()),
+                ("callbackUrl", PRODUCTION_ORIGIN),
+            ])
+            .send()
+            .await
+            .map_err(QuantWheelError::Request)?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(QuantWheelError::Auth(response_message(response).await))
+        }
+    }
+
+    pub async fn verify_login_code(
+        &self,
+        email: &str,
+        code: &str,
+    ) -> Result<String, QuantWheelError> {
+        let response = self
+            .client
+            .post(self.origin_url.join("/api/auth/email-code/verify").unwrap())
+            .json(&serde_json::json!({
+                "email": email.trim().to_ascii_lowercase(),
+                "code": code.trim(),
+                "callbackUrl": PRODUCTION_ORIGIN,
+            }))
+            .send()
+            .await
+            .map_err(QuantWheelError::Request)?;
+        if !response.status().is_success() {
+            return Err(QuantWheelError::Auth(response_message(response).await));
+        }
+        let callback: QuantWheelLoginCallbackDto =
+            response.json().await.map_err(QuantWheelError::Request)?;
+        self.client
+            .get(callback.url)
+            .send()
+            .await
+            .map_err(QuantWheelError::Request)?
+            .error_for_status()
+            .map_err(QuantWheelError::Request)?;
+        let session: QuantWheelSessionDto = self
+            .client
+            .get(self.origin_url.join("/api/auth/session").unwrap())
+            .send()
+            .await
+            .map_err(QuantWheelError::Request)?
+            .json()
+            .await
+            .map_err(QuantWheelError::Request)?;
+        if session.user.is_none() {
+            return Err(QuantWheelError::Auth(
+                "the verification completed without an authenticated session".to_owned(),
+            ));
+        }
+        self.session_cookie().ok_or_else(|| {
+            QuantWheelError::Auth("QuantWheel did not return a session cookie".to_owned())
+        })
+    }
+
+    fn session_cookie(&self) -> Option<String> {
+        self.cookie_jar
+            .cookies(&self.origin_url)?
+            .to_str()
+            .ok()?
+            .split(';')
+            .map(str::trim)
+            .find(|cookie| cookie.starts_with("__Secure-authjs.session-token="))
+            .map(str::to_owned)
+    }
+}
+
+async fn response_message(response: reqwest::Response) -> String {
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    serde_json::from_str::<serde_json::Value>(&body)
+        .ok()
+        .and_then(|value| value.get("error")?.as_str().map(str::to_owned))
+        .unwrap_or_else(|| {
+            format!(
+                "HTTP {}: {}",
+                status.as_u16(),
+                body.chars().take(256).collect::<String>()
+            )
+        })
+}
+
+fn select_expirations(
+    available: &[NaiveDate],
+    today: NaiveDate,
+    selection: QuantWheelExpirySelection,
+) -> Result<Vec<NaiveDate>, QuantWheelError> {
+    let future = available
+        .iter()
+        .copied()
+        .filter(|expiration| *expiration >= today)
+        .collect::<Vec<_>>();
+    let selected = match selection {
+        QuantWheelExpirySelection::NextExpiry => future.first().copied().into_iter().collect(),
+        QuantWheelExpirySelection::All => future,
+        QuantWheelExpirySelection::ThroughDays(days) => {
+            let target = today
+                .checked_add_days(Days::new(u64::from(days)))
+                .ok_or(QuantWheelError::NoExpirations)?;
+            let boundary = future
+                .iter()
+                .copied()
+                .find(|expiration| *expiration >= target)
+                .ok_or(QuantWheelError::NoExpirations)?;
+            future
+                .into_iter()
+                .take_while(|expiration| *expiration <= boundary)
+                .collect()
+        }
+    };
+    (!selected.is_empty())
+        .then_some(selected)
+        .ok_or(QuantWheelError::NoExpirations)
+}
+
+#[derive(Debug, Deserialize)]
+struct QuantWheelExpirationsDto {
+    expirations: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct QuantWheelCsrfDto {
+    csrf_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuantWheelLoginCallbackDto {
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct QuantWheelSessionDto {
+    user: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -448,7 +744,7 @@ mod tests {
 
     fn test_config() -> QuantWheelConfig {
         QuantWheelConfig {
-            expiration: NaiveDate::from_ymd_opt(2026, 8, 10).expect("date"),
+            expiration_override: Some(NaiveDate::from_ymd_opt(2026, 8, 10).expect("date")),
             ..QuantWheelConfig::default()
         }
     }
@@ -457,7 +753,10 @@ mod tests {
     async fn fetch_uses_configured_expiration_and_typed_response() {
         let (url, server) = serve_once("200 OK", RESPONSE);
         let client = QuantWheelGexClient::with_base_url(url, test_config(), None).expect("client");
-        let response = client.fetch_gex().await.expect("snapshot");
+        let response = client
+            .fetch_gex(QuantWheelExpirySelection::NextExpiry)
+            .await
+            .expect("snapshot");
         assert_eq!(response.snapshot.levels[0].strike, 400.0);
         assert_eq!(response.quota.limit, 5);
         assert_eq!(response.quota.remaining, Some(3));
@@ -471,7 +770,9 @@ mod tests {
         let (url, server) = serve_once("503 Service Unavailable", "temporarily unavailable");
         let client = QuantWheelGexClient::with_base_url(url, test_config(), None).expect("client");
         assert!(matches!(
-            client.fetch_gex().await,
+            client
+                .fetch_gex(QuantWheelExpirySelection::NextExpiry)
+                .await,
             Err(QuantWheelError::Http { status: 503, .. })
         ));
         server.join().expect("server");
@@ -479,7 +780,9 @@ mod tests {
         let (url, server) = serve_once("200 OK", "not-json");
         let client = QuantWheelGexClient::with_base_url(url, test_config(), None).expect("client");
         assert!(matches!(
-            client.fetch_gex().await,
+            client
+                .fetch_gex(QuantWheelExpirySelection::NextExpiry)
+                .await,
             Err(QuantWheelError::Decode(_))
         ));
         server.join().expect("server");
@@ -488,7 +791,7 @@ mod tests {
     #[test]
     fn estimated_daily_reset_is_next_utc_midnight() {
         let now = UnixMs::new(1_800_000_012_345);
-        let quota = QuantWheelQuota::from_headers(&HeaderMap::new(), now);
+        let quota = QuantWheelQuota::from_headers(&HeaderMap::new(), now, false);
         assert_eq!(quota.reset_at.as_u64() % DAY_MS, 0);
         assert!(quota.reset_at > now);
         assert!(quota.reset_at.saturating_diff(now) <= DAY_MS);

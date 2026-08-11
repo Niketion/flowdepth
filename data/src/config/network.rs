@@ -11,6 +11,10 @@ pub struct Network {
     /// Stored in the system keychain, never persisted to JSON.
     #[serde(skip)]
     pub server_auth_token: Option<String>,
+    /// QuantWheel Auth.js session cookie. Stored in the system keychain and
+    /// never persisted to the saved-state JSON.
+    #[serde(skip)]
+    pub quantwheel_session_cookie: Option<String>,
     pub trade_fetch_mode: TradeFetchMode,
 }
 
