@@ -84,7 +84,7 @@ fn next_utc_midnight(now: UnixMs) -> UnixMs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantWheelConfig {
     /// Optional deterministic override used by controlled integrations. The
-    /// production client discovers valid GLD expirations from QuantWheel.
+    /// production client discovers valid expirations from QuantWheel.
     pub expiration_override: Option<NaiveDate>,
     pub delta_range: String,
     pub formula: String,
@@ -125,7 +125,7 @@ pub enum QuantWheelError {
     EmptySnapshot,
     #[error("QuantWheel returned invalid {field}: {value}")]
     InvalidNumber { field: &'static str, value: f64 },
-    #[error("QuantWheel returned no usable GLD expirations")]
+    #[error("QuantWheel returned no usable expirations for the requested underlying")]
     NoExpirations,
     #[error("QuantWheel authentication failed: {0}")]
     Auth(String),
@@ -225,12 +225,18 @@ impl QuantWheelGexClient {
 
     pub async fn fetch_gex(
         &self,
+        underlying: OptionsUnderlying,
         selection: QuantWheelExpirySelection,
     ) -> Result<QuantWheelGexResponse, QuantWheelError> {
+        if !matches!(underlying, OptionsUnderlying::Gld | OptionsUnderlying::Ndx) {
+            return Err(QuantWheelError::Auth(format!(
+                "unsupported QuantWheel underlying {underlying}"
+            )));
+        }
         let expirations = if let Some(expiration) = self.config.expiration_override {
             vec![expiration]
         } else {
-            let available = self.fetch_expirations().await?;
+            let available = self.fetch_expirations(underlying).await?;
             select_expirations(&available, Utc::now().date_naive(), selection)?
         };
         let expiration_query = expirations
@@ -239,7 +245,7 @@ impl QuantWheelGexClient {
             .collect::<Vec<_>>()
             .join(",");
         log::info!(
-            "GEX FetchStarted kind=snapshot underlying=GLD provider=QuantWheel auth={} selection={selection:?} expirations={expiration_query}",
+            "GEX FetchStarted kind=snapshot underlying={underlying} provider=QuantWheel auth={} selection={selection:?} expirations={expiration_query}",
             if self.session_cookie().is_some() {
                 "session"
             } else {
@@ -250,7 +256,7 @@ impl QuantWheelGexClient {
             .client
             .get(&self.base_url)
             .query(&[
-                ("ticker", "GLD"),
+                ("ticker", underlying.as_str()),
                 ("expirations", expiration_query.as_str()),
                 ("deltaRange", self.config.delta_range.as_str()),
                 ("formula", self.config.formula.as_str()),
@@ -275,9 +281,9 @@ impl QuantWheelGexClient {
         }
         let dto: QuantWheelResponseDto =
             serde_json::from_str(&body).map_err(QuantWheelError::Decode)?;
-        let snapshot = dto.validate(UnixMs::now())?;
+        let snapshot = dto.validate(underlying, UnixMs::now())?;
         log::info!(
-            "GEX SnapshotRefreshed underlying=GLD provider=QuantWheel levels={} expirations={} observed_at={}",
+            "GEX SnapshotRefreshed underlying={underlying} provider=QuantWheel levels={} expirations={} observed_at={}",
             snapshot.levels.len(),
             expiration_query,
             snapshot.observed_at
@@ -289,11 +295,14 @@ impl QuantWheelGexClient {
         })
     }
 
-    async fn fetch_expirations(&self) -> Result<Vec<NaiveDate>, QuantWheelError> {
+    async fn fetch_expirations(
+        &self,
+        underlying: OptionsUnderlying,
+    ) -> Result<Vec<NaiveDate>, QuantWheelError> {
         let response = self
             .client
             .get(&self.expirations_url)
-            .query(&[("ticker", "GLD")])
+            .query(&[("ticker", underlying.as_str())])
             .send()
             .await
             .map_err(QuantWheelError::Request)?;
@@ -556,7 +565,11 @@ struct QuantWheelWallDto {
 }
 
 impl QuantWheelResponseDto {
-    fn validate(self, observed_at: UnixMs) -> Result<QuantWheelGexSnapshot, QuantWheelError> {
+    fn validate(
+        self,
+        underlying: OptionsUnderlying,
+        observed_at: UnixMs,
+    ) -> Result<QuantWheelGexSnapshot, QuantWheelError> {
         positive("stockPrice", self.stock_price)?;
         finite("totalGEX", self.total_gex)?;
         if self.data.is_empty() {
@@ -569,7 +582,7 @@ impl QuantWheelResponseDto {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(QuantWheelGexSnapshot {
             provider: OptionsProvider::QuantWheel,
-            underlying: OptionsUnderlying::Gld,
+            underlying,
             stock_price: self.stock_price,
             total_gex: self.total_gex,
             call_wall: self
@@ -654,7 +667,9 @@ mod tests {
     #[test]
     fn parses_documented_response_fields() {
         let dto: QuantWheelResponseDto = serde_json::from_str(RESPONSE).expect("typed response");
-        let snapshot = dto.validate(UnixMs::new(1)).expect("valid snapshot");
+        let snapshot = dto
+            .validate(OptionsUnderlying::Gld, UnixMs::new(1))
+            .expect("valid snapshot");
         let level = &snapshot.levels[0];
         assert_eq!(snapshot.stock_price, 397.76);
         assert_eq!(level.strike, 400.0);
@@ -681,7 +696,9 @@ mod tests {
             "callOI":3,"putOI":4,"cumulativeGEX":5}],"totalGEX":-1,
             "callWall":null,"putWall":null,"gammaInflection":null,"stockPrice":400}"#;
         let dto: QuantWheelResponseDto = serde_json::from_str(body).expect("typed response");
-        let snapshot = dto.validate(UnixMs::new(1)).expect("valid snapshot");
+        let snapshot = dto
+            .validate(OptionsUnderlying::Gld, UnixMs::new(1))
+            .expect("valid snapshot");
         assert!(snapshot.call_wall.is_none());
         assert!(snapshot.put_wall.is_none());
         assert!(snapshot.gamma_inflection.is_none());
@@ -693,7 +710,7 @@ mod tests {
             serde_json::from_str(r#"{"data":[],"totalGEX":0,"stockPrice":400}"#)
                 .expect("typed response");
         assert!(matches!(
-            empty.validate(UnixMs::new(1)),
+            empty.validate(OptionsUnderlying::Gld, UnixMs::new(1)),
             Err(QuantWheelError::EmptySnapshot)
         ));
         let zero: QuantWheelResponseDto = serde_json::from_str(
@@ -702,7 +719,7 @@ mod tests {
         )
         .expect("typed response");
         assert!(matches!(
-            zero.validate(UnixMs::new(1)),
+            zero.validate(OptionsUnderlying::Gld, UnixMs::new(1)),
             Err(QuantWheelError::InvalidNumber {
                 field: "stockPrice",
                 ..
@@ -720,6 +737,7 @@ mod tests {
     fn serve_once(
         status: &'static str,
         body: &'static str,
+        ticker: &'static str,
     ) -> (String, std::thread::JoinHandle<()>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
         let address = listener.local_addr().expect("address");
@@ -729,7 +747,7 @@ mod tests {
             let count = stream.read(&mut request).expect("request");
             let request = String::from_utf8_lossy(&request[..count]);
             assert!(request.starts_with("GET /?"));
-            assert!(request.contains("ticker=GLD"));
+            assert!(request.contains(&format!("ticker={ticker}")));
             assert!(request.contains("expirations=2026-08-10"));
             assert!(request.contains("deltaRange=0.97"));
             assert!(request.contains("formula=nominal"));
@@ -751,10 +769,13 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_uses_configured_expiration_and_typed_response() {
-        let (url, server) = serve_once("200 OK", RESPONSE);
+        let (url, server) = serve_once("200 OK", RESPONSE, "GLD");
         let client = QuantWheelGexClient::with_base_url(url, test_config(), None).expect("client");
         let response = client
-            .fetch_gex(QuantWheelExpirySelection::NextExpiry)
+            .fetch_gex(
+                OptionsUnderlying::Gld,
+                QuantWheelExpirySelection::NextExpiry,
+            )
             .await
             .expect("snapshot");
         assert_eq!(response.snapshot.levels[0].strike, 400.0);
@@ -766,22 +787,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fetch_ndx_uses_ndx_ticker_and_preserves_underlying() {
+        let (url, server) = serve_once("200 OK", RESPONSE, "NDX");
+        let client = QuantWheelGexClient::with_base_url(url, test_config(), None).expect("client");
+        let response = client
+            .fetch_gex(
+                OptionsUnderlying::Ndx,
+                QuantWheelExpirySelection::NextExpiry,
+            )
+            .await
+            .expect("snapshot");
+        assert_eq!(response.snapshot.underlying, OptionsUnderlying::Ndx);
+        server.join().expect("server");
+    }
+
+    #[tokio::test]
     async fn http_and_parser_errors_are_returned_without_panicking() {
-        let (url, server) = serve_once("503 Service Unavailable", "temporarily unavailable");
+        let (url, server) = serve_once("503 Service Unavailable", "temporarily unavailable", "GLD");
         let client = QuantWheelGexClient::with_base_url(url, test_config(), None).expect("client");
         assert!(matches!(
             client
-                .fetch_gex(QuantWheelExpirySelection::NextExpiry)
+                .fetch_gex(
+                    OptionsUnderlying::Gld,
+                    QuantWheelExpirySelection::NextExpiry
+                )
                 .await,
             Err(QuantWheelError::Http { status: 503, .. })
         ));
         server.join().expect("server");
 
-        let (url, server) = serve_once("200 OK", "not-json");
+        let (url, server) = serve_once("200 OK", "not-json", "GLD");
         let client = QuantWheelGexClient::with_base_url(url, test_config(), None).expect("client");
         assert!(matches!(
             client
-                .fetch_gex(QuantWheelExpirySelection::NextExpiry)
+                .fetch_gex(
+                    OptionsUnderlying::Gld,
+                    QuantWheelExpirySelection::NextExpiry
+                )
                 .await,
             Err(QuantWheelError::Decode(_))
         ));

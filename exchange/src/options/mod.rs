@@ -32,6 +32,7 @@ pub enum OptionsUnderlying {
     Btc,
     Eth,
     Gld,
+    Ndx,
 }
 
 impl OptionsUnderlying {
@@ -42,6 +43,7 @@ impl OptionsUnderlying {
             Self::Btc => "BTC",
             Self::Eth => "ETH",
             Self::Gld => "GLD",
+            Self::Ndx => "NDX",
         }
     }
 }
@@ -82,6 +84,15 @@ impl GexSource {
         }
     }
 
+    pub const fn nq_ndx() -> Self {
+        Self::Proxy {
+            provider: OptionsProvider::QuantWheel,
+            source_symbol: OptionsUnderlying::Ndx,
+            target_symbol: "NQ",
+            price_mapping: GexPriceMapping::SpotRatio,
+        }
+    }
+
     pub const fn source_underlying(self) -> OptionsUnderlying {
         match self {
             Self::Native { underlying, .. } => underlying,
@@ -92,6 +103,7 @@ impl GexSource {
     pub const fn for_chart_underlying(underlying: OptionsUnderlying) -> Self {
         match underlying {
             OptionsUnderlying::Gld => Self::xaut_gld(),
+            OptionsUnderlying::Ndx => Self::nq_ndx(),
             OptionsUnderlying::Btc | OptionsUnderlying::Eth => Self::deribit(underlying),
         }
     }
@@ -199,6 +211,8 @@ pub fn resolve_gex_source(ticker: Ticker) -> Option<GexSource> {
     let (symbol, _) = ticker.display_symbol_and_type();
     if is_xaut_symbol(&symbol) {
         Some(GexSource::xaut_gld())
+    } else if is_nq_symbol(&symbol) {
+        Some(GexSource::nq_ndx())
     } else {
         resolve_symbol(&symbol).map(GexSource::deribit)
     }
@@ -232,6 +246,46 @@ fn is_xaut_symbol(symbol: &str) -> bool {
         .or_else(|| normalized.strip_suffix("PERP"))
         .unwrap_or(&normalized);
     ["XAUTUSD", "XAUTUSDT", "XAUTUSDC"].contains(&normalized)
+}
+
+fn is_nq_symbol(symbol: &str) -> bool {
+    let normalized = symbol.to_ascii_uppercase();
+    let normalized = normalized
+        .strip_suffix("-PERP")
+        .or_else(|| normalized.strip_suffix("_PERP"))
+        .or_else(|| normalized.strip_suffix("PERP"))
+        .unwrap_or(&normalized);
+    if [
+        "NDX",
+        "NDXUSD",
+        "NDXUSDT",
+        "NDXUSDC",
+        "NAS100",
+        "NAS100USD",
+        "NAS100USDT",
+        "NAS100USDC",
+        "NAS100_USD",
+        "NAS100_USDT",
+        "NAS100_USDC",
+        "NQ",
+        "NQUSD",
+        "NQUSDT",
+        "NQUSDC",
+    ]
+    .contains(&normalized)
+    {
+        return true;
+    }
+    // Listed futures commonly carry a month code and one/two-digit year (NQU6/NQZ26).
+    normalized.strip_prefix("NQ").is_some_and(|suffix| {
+        let mut chars = suffix.chars();
+        matches!(
+            chars.next(),
+            Some('F' | 'G' | 'H' | 'J' | 'K' | 'M' | 'N' | 'Q' | 'U' | 'V' | 'X' | 'Z')
+        ) && chars.as_str().len() <= 2
+            && !chars.as_str().is_empty()
+            && chars.as_str().chars().all(|c| c.is_ascii_digit())
+    })
 }
 
 #[cfg(test)]
@@ -293,6 +347,21 @@ mod tests {
         );
         assert_eq!(
             resolve_gex_source(ticker("SOLUSDT", Exchange::BinanceLinear)),
+            None
+        );
+    }
+
+    #[test]
+    fn gex_source_resolves_ndx_proxy_markets() {
+        for symbol in ["NAS100_USDT", "NAS100USD", "NDX", "NQU6", "NQZ26"] {
+            assert_eq!(
+                resolve_gex_source(ticker(symbol, Exchange::MexcLinear)),
+                Some(GexSource::nq_ndx()),
+                "symbol {symbol}"
+            );
+        }
+        assert_eq!(
+            resolve_gex_source(ticker("NQABC", Exchange::MexcLinear)),
             None
         );
     }

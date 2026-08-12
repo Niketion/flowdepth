@@ -137,16 +137,18 @@ pub enum GexChartAsset {
     Btc,
     Eth,
     Xau,
+    Nq,
 }
 
 impl GexChartAsset {
-    const ALL: [Self; 3] = [Self::Btc, Self::Eth, Self::Xau];
+    const ALL: [Self; 4] = [Self::Btc, Self::Eth, Self::Xau, Self::Nq];
 
     const fn underlying(self) -> exchange::options::OptionsUnderlying {
         match self {
             Self::Btc => exchange::options::OptionsUnderlying::Btc,
             Self::Eth => exchange::options::OptionsUnderlying::Eth,
             Self::Xau => exchange::options::OptionsUnderlying::Gld,
+            Self::Nq => exchange::options::OptionsUnderlying::Ndx,
         }
     }
 
@@ -155,6 +157,7 @@ impl GexChartAsset {
             exchange::options::OptionsUnderlying::Btc => Self::Btc,
             exchange::options::OptionsUnderlying::Eth => Self::Eth,
             exchange::options::OptionsUnderlying::Gld => Self::Xau,
+            exchange::options::OptionsUnderlying::Ndx => Self::Nq,
         }
     }
 }
@@ -165,6 +168,7 @@ impl std::fmt::Display for GexChartAsset {
             Self::Btc => "BTC",
             Self::Eth => "ETH",
             Self::Xau => "XAU",
+            Self::Nq => "NQ",
         })
     }
 }
@@ -288,7 +292,11 @@ impl State {
             .map_or((false, *liquidity_reference), |chart| {
                 (
                     chart.config().show_gamma_liquidity_panel
-                        || chart.underlying() == exchange::options::OptionsUnderlying::Gld,
+                        || matches!(
+                            chart.underlying(),
+                            exchange::options::OptionsUnderlying::Gld
+                                | exchange::options::OptionsUnderlying::Ndx
+                        ),
                     chart.liquidity_reference().or(*liquidity_reference),
                 )
             });
@@ -936,17 +944,20 @@ impl State {
             ..
         } = &self.content
         {
-            let gex_source = if *underlying == exchange::options::OptionsUnderlying::Gld {
-                "GEX · QuantWheel GLD"
-            } else {
-                "GEX · Deribit"
+            let gex_source = match underlying {
+                exchange::options::OptionsUnderlying::Gld => "GEX · QuantWheel GLD",
+                exchange::options::OptionsUnderlying::Ndx => "GEX · QuantWheel NDX",
+                _ => "GEX · Deribit",
             };
             let reference = chart
                 .as_ref()
                 .and_then(GexChart::liquidity_reference)
                 .or(*liquidity_reference);
-            let xau_reference_required =
-                *underlying == exchange::options::OptionsUnderlying::Gld && reference.is_none();
+            let proxy_reference_required = matches!(
+                underlying,
+                exchange::options::OptionsUnderlying::Gld
+                    | exchange::options::OptionsUnderlying::Ndx
+            ) && reference.is_none();
             let reference_content: Element<'_, Message> = if let Some(reference) = reference {
                 let (symbol, _) = reference.ticker.display_symbol_and_type();
                 row![
@@ -959,10 +970,15 @@ impl State {
                 .spacing(4)
                 .align_y(Alignment::Center)
                 .into()
-            } else if xau_reference_required {
+            } else if proxy_reference_required {
+                let target = match underlying {
+                    exchange::options::OptionsUnderlying::Ndx => "NQ/NAS100",
+                    _ => "XAU/XAUT",
+                };
                 row![
                     text("!").size(crate::style::text_size::SECTION),
-                    text("Required · select XAUT market").size(crate::style::text_size::SMALL),
+                    text(format!("Required · select {target} market"))
+                        .size(crate::style::text_size::SMALL),
                 ]
                 .spacing(4)
                 .align_y(Alignment::Center)
@@ -991,14 +1007,20 @@ impl State {
                     )
                 })
                 .height(widget::PANE_CONTROL_BTN_HEIGHT);
-            let reference_button: Element<'_, Message> = if xau_reference_required {
+            let reference_button: Element<'_, Message> = if proxy_reference_required {
+                let explanation = match underlying {
+                    exchange::options::OptionsUnderlying::Ndx => {
+                        "Required for NQ: choose an NQ/NAS100 market whose live price is used to convert QuantWheel NDX option strikes."
+                    }
+                    _ => {
+                        "Required for XAU: choose an XAU/XAUT market whose live price is used to convert QuantWheel GLD option strikes."
+                    }
+                };
                 iced::widget::tooltip(
                     reference_button,
-                    container(text(
-                        "Required for XAU: choose an XAU/XAUT market whose live price is used to convert QuantWheel GLD option strikes.",
-                    ))
-                    .style(style::tooltip)
-                    .padding(8),
+                    container(text(explanation))
+                        .style(style::tooltip)
+                        .padding(8),
                     tooltip::Position::Bottom,
                 )
                 .delay(widget::DEFAULT_TOOLTIP_DELAY)
@@ -1242,7 +1264,7 @@ impl State {
             } => {
                 if *unsupported {
                     let base = center(text(
-                        "GEX data is currently available for BTC, ETH, and XAUT via GLD proxy.",
+                        "GEX data is currently available for BTC, ETH, XAUT via GLD, and NQ/NAS100 via NDX.",
                     ))
                     .into();
                     self.compose_stack_view(
@@ -3623,7 +3645,7 @@ mod tests {
     fn gex_asset_selector_contains_only_btc_eth_and_xau() {
         assert_eq!(
             GexChartAsset::ALL.map(|asset| asset.to_string()),
-            ["BTC", "ETH", "XAU"]
+            ["BTC", "ETH", "XAU", "NQ"]
         );
 
         let mut state = gex_state(data::chart::gex::Config::default());

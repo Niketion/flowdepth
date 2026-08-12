@@ -1171,14 +1171,21 @@ impl Flowsurface {
                 } else {
                     Vec::new()
                 };
-                let quantwheel_tasks = if let Some(client) = self.quantwheel_gex_client.clone()
-                    && self.gex_coordinator.due_quantwheel_fetch(gex_now, true)
-                {
-                    let expiry_filter = self.gex_coordinator.quantwheel_expiry_filter();
-                    vec![Task::perform(
-                        connector::gex::execute_quantwheel_fetch(client, expiry_filter),
-                        Message::QuantWheelGexFetchCompleted,
-                    )]
+                let quantwheel_tasks = if let Some(client) = self.quantwheel_gex_client.clone() {
+                    self.gex_coordinator
+                        .due_quantwheel_fetches(gex_now, true)
+                        .into_iter()
+                        .map(|(underlying, expiry_filter)| {
+                            Task::perform(
+                                connector::gex::execute_quantwheel_fetch(
+                                    client.clone(),
+                                    underlying,
+                                    expiry_filter,
+                                ),
+                                Message::QuantWheelGexFetchCompleted,
+                            )
+                        })
+                        .collect()
                 } else {
                     Vec::new()
                 };

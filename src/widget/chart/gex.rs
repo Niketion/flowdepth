@@ -37,10 +37,17 @@ impl GexLayoutDensity {
 
 fn view_sized(chart: &gex::GexChart, density: GexLayoutDensity) -> Element<'_, gex::Message> {
     let Some(snapshot) = chart.snapshot() else {
-        let status_message = if chart.underlying() == exchange::options::OptionsUnderlying::Gld
-            && chart.liquidity_reference().is_none()
+        let status_message = if matches!(
+            chart.underlying(),
+            exchange::options::OptionsUnderlying::Gld | exchange::options::OptionsUnderlying::Ndx
+        ) && chart.liquidity_reference().is_none()
         {
-            "Select an XAU/XAUT liquidity market above to map the GLD option levels."
+            match chart.underlying() {
+                exchange::options::OptionsUnderlying::Ndx => {
+                    "Select an NQ/NAS100 liquidity market above to map the NDX option levels."
+                }
+                _ => "Select an XAU/XAUT liquidity market above to map the GLD option levels.",
+            }
         } else if chart.freshness() == GexFreshness::Error {
             "GEX data unavailable."
         } else {

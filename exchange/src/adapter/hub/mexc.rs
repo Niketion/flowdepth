@@ -1,5 +1,5 @@
 use crate::{
-    Event, Kline, PushFrequency, Ticker, TickerInfo, Timeframe, UnixMs,
+    Event, Kline, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, UnixMs,
     adapter::{Exchange, MarketKind, StreamTicksize, limiter::FixedWindowRateLimiterConfig},
     depth::DepthPayload,
     unit::{ContractSize, qty::RawQtyUnit},
@@ -223,6 +223,21 @@ impl MexcHandle {
             .await
     }
 
+    pub async fn fetch_trades(
+        &self,
+        ticker: TickerInfo,
+        from_time: UnixMs,
+    ) -> Result<Vec<Trade>, AdapterError> {
+        self.request_port
+            .request(move |reply| MexcCommand::Trades {
+                ticker,
+                from_time,
+                data_path: None,
+                reply,
+            })
+            .await
+    }
+
     pub fn connect_depth_stream(
         self,
         ticker_info: TickerInfo,
@@ -305,5 +320,14 @@ impl super::FetchCommandHandler<MexcMarketScope> for Worker {
         ticker: Ticker,
     ) -> futures::future::BoxFuture<'_, Result<DepthPayload, AdapterError>> {
         Box::pin(async move { fetch::fetch_depth_snapshot(&mut self.hub, ticker).await })
+    }
+
+    fn fetch_trades(
+        &mut self,
+        ticker_info: TickerInfo,
+        from_time: UnixMs,
+        _data_path: Option<std::path::PathBuf>,
+    ) -> futures::future::BoxFuture<'_, Result<Vec<Trade>, AdapterError>> {
+        Box::pin(async move { fetch::fetch_trades(&mut self.hub, ticker_info, from_time).await })
     }
 }

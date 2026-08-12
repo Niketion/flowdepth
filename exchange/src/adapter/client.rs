@@ -509,6 +509,12 @@ impl AdapterHandles {
                 };
                 handle.fetch_trades(ticker_info, from_time, data_path).await
             }
+            Venue::Mexc if ticker_info.is_perps() => {
+                let Some(handle) = self.mexc.as_ref() else {
+                    return Err(Self::missing_venue_error(exchange.venue()));
+                };
+                handle.fetch_trades(ticker_info, from_time).await
+            }
             _ => Err(AdapterError::InvalidRequest(format!(
                 "Trade fetch not available for {exchange}"
             ))),

@@ -186,6 +186,24 @@ pub fn is_trade_fetch_enabled() -> bool {
     trade_fetch_mode() != TradeFetchMode::Off
 }
 
+fn supports_exchange_trade_fetch(exchange: Exchange) -> bool {
+    matches!(
+        exchange,
+        Exchange::BinanceSpot
+            | Exchange::BinanceLinear
+            | Exchange::BinanceInverse
+            | Exchange::MexcLinear
+            | Exchange::MexcInverse
+    )
+}
+
+fn exchange_trade_data_path(exchange: Exchange) -> PathBuf {
+    data::data_path(Some(match exchange.venue() {
+        exchange::adapter::Venue::Mexc => "market_data/mexc/",
+        _ => "market_data/binance/",
+    }))
+}
+
 const TRADE_REST_REQUEST_TIMEOUT: Duration = Duration::from_secs(35);
 
 /// Overall wall-clock timeout for the entire trade worker (all REST batches).
@@ -1364,10 +1382,7 @@ pub fn request_fetch(
             });
 
             if let Some((ticker_info, pane_id, stream)) = trade_info {
-                let is_binance = matches!(
-                    ticker_info.exchange(),
-                    Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
-                );
+                let supports_exchange_fetch = supports_exchange_trade_fetch(ticker_info.exchange());
                 let mode = trade_fetch_mode();
 
                 if mode == TradeFetchMode::Server && server.is_none() {
@@ -1379,11 +1394,11 @@ pub fn request_fetch(
                     });
                 }
 
-                if mode == TradeFetchMode::Exchange && !is_binance {
+                if mode == TradeFetchMode::Exchange && !supports_exchange_fetch {
                     return Task::done(FetchUpdate::Error {
                         pane_id,
                         error: format!(
-                            "Trade fetch via exchange API is only supported for Binance, got {}",
+                            "Trade fetch via exchange API is not supported for {}",
                             ticker_info.exchange()
                         ),
                         req_id: Some(req_id),
@@ -1391,8 +1406,8 @@ pub fn request_fetch(
                     });
                 }
 
-                if server.is_some() || is_binance {
-                    let data_path = data::data_path(Some("market_data/binance/"));
+                if server.is_some() || supports_exchange_fetch {
+                    let data_path = exchange_trade_data_path(ticker_info.exchange());
                     log::info!(
                         "TRADE Start | venue={} symbol={} range={} req={} pane={} stream={} path={}",
                         format_venue(&ticker_info),
@@ -1536,13 +1551,10 @@ pub fn request_fetch(
             };
 
             if let Some((ticker_info, timeframe, pane_id, stream)) = kline_info {
-                let is_binance = matches!(
-                    ticker_info.exchange(),
-                    Exchange::BinanceSpot | Exchange::BinanceLinear | Exchange::BinanceInverse
-                );
+                let supports_exchange_fetch = supports_exchange_trade_fetch(ticker_info.exchange());
 
-                if is_binance {
-                    let data_path = data::data_path(Some("market_data/binance/"));
+                if supports_exchange_fetch {
+                    let data_path = exchange_trade_data_path(ticker_info.exchange());
                     log::info!(
                         "BUBBLE Summary Request | venue={} symbol={} range={} tf={timeframe:?} timeframe_ms={} max_candidates={} req={} pane={}",
                         format_venue(&ticker_info),

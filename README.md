@@ -72,7 +72,9 @@ in Settings → Network. Three modes are available:
 - **Exchange**: Fetches directly from Binance's public REST API and bulk data
   mirrors ([data.binance.vision](https://data.binance.vision/)). Fast for
   daily archives; paginated and rate-limited for intraday ranges. **Binance
-  only** (spot, linear, inverse).
+  only for full history** (spot, linear, inverse). MEXC perpetuals can seed the
+  chart from the public recent-deals window (the latest 100 trades); use Server
+  mode for older MEXC history.
 
 - **[Server](https://github.com/flowsurface-rs/server)**: Fetches from any HTTP server that exposes a
   `GET /trades.arrow` endpoint returning an

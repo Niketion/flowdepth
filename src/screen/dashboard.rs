@@ -361,21 +361,30 @@ impl Dashboard {
                             }
                             exchange::options::GexSource::Proxy {
                                 provider: exchange::options::OptionsProvider::QuantWheel,
-                                source_symbol: exchange::options::OptionsUnderlying::Gld,
+                                source_symbol,
                                 target_symbol,
                                 price_mapping: exchange::options::GexPriceMapping::SpotRatio,
-                            } => {
+                            } if matches!(
+                                source_symbol,
+                                exchange::options::OptionsUnderlying::Gld
+                                    | exchange::options::OptionsUnderlying::Ndx
+                            ) =>
+                            {
                                 let target = chart
                                     .liquidity_reference()
                                     .map(|ticker| ticker.ticker.display_symbol_and_type().0)
                                     .unwrap_or_else(|| target_symbol.to_owned());
                                 let snapshot = chart.proxy_target_spot().and_then(|target_spot| {
-                                    coordinator.mapped_quantwheel(&target, target_spot)
+                                    coordinator.mapped_quantwheel(
+                                        source_symbol,
+                                        &target,
+                                        target_spot,
+                                    )
                                 });
                                 chart.set_snapshot(
                                     snapshot,
-                                    coordinator.quantwheel_freshness(now),
-                                    coordinator.quantwheel_error().map(Arc::from),
+                                    coordinator.quantwheel_freshness(source_symbol, now),
+                                    coordinator.quantwheel_error(source_symbol).map(Arc::from),
                                 );
                                 chart.set_quantwheel_quota(coordinator.quantwheel_quota());
                                 chart.set_derive_flow(None);
@@ -466,10 +475,15 @@ impl Dashboard {
                             }
                             exchange::options::GexSource::Proxy {
                                 provider: exchange::options::OptionsProvider::QuantWheel,
-                                source_symbol: exchange::options::OptionsUnderlying::Gld,
+                                source_symbol,
                                 target_symbol,
                                 price_mapping: exchange::options::GexPriceMapping::SpotRatio,
-                            } => {
+                            } if matches!(
+                                source_symbol,
+                                exchange::options::OptionsUnderlying::Gld
+                                    | exchange::options::OptionsUnderlying::Ndx
+                            ) =>
+                            {
                                 let Some(target_spot) = chart.current_market_price() else {
                                     chart.set_gex_overlay_data(
                                         None,
@@ -488,20 +502,27 @@ impl Dashboard {
                                     .map(|ticker| ticker.ticker.display_symbol_and_type().0)
                                     .unwrap_or_else(|| target_symbol.to_owned());
                                 let snapshot = coordinator
-                                    .mapped_quantwheel(&target, target_spot)
+                                    .mapped_quantwheel(source_symbol, &target, target_spot)
                                     .or_else(|| {
                                         coordinator
-                                            .mapped_quantwheel_history(levels.history_minutes, now)
+                                            .mapped_quantwheel_history(
+                                                source_symbol,
+                                                levels.history_minutes,
+                                                now,
+                                            )
                                             .last()
                                             .cloned()
                                     });
-                                let history = coordinator
-                                    .mapped_quantwheel_history(levels.history_minutes, now);
+                                let history = coordinator.mapped_quantwheel_history(
+                                    source_symbol,
+                                    levels.history_minutes,
+                                    now,
+                                );
                                 (
                                     snapshot,
                                     history,
-                                    coordinator.quantwheel_freshness(now),
-                                    coordinator.quantwheel_error().map(Arc::from),
+                                    coordinator.quantwheel_freshness(source_symbol, now),
+                                    coordinator.quantwheel_error(source_symbol).map(Arc::from),
                                     Vec::new(),
                                     data::chart::gex::GexFreshness::Loading,
                                     None,

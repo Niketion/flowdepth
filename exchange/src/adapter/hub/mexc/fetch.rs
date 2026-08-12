@@ -1,5 +1,5 @@
 use crate::{
-    Kline, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, UnixMs, Volume,
+    Kline, Price, Qty, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs, Volume,
     adapter::MarketKind,
     depth::{DeOrder, DepthPayload},
     serde_util::{self, de_string_to_number},
@@ -21,6 +21,27 @@ struct FuturesApiResponse {
     success: bool,
     code: u8,
     data: Value,
+}
+
+#[derive(Deserialize, Debug)]
+struct FuturesTradeResponse {
+    success: bool,
+    code: u64,
+    data: Vec<FuturesTrade>,
+}
+
+#[derive(Deserialize, Debug)]
+struct FuturesTrade {
+    #[serde(rename = "p")]
+    price: f64,
+    #[serde(rename = "v")]
+    qty: f64,
+    #[serde(rename = "T")]
+    direction: u8,
+    #[serde(rename = "t")]
+    time: u64,
+    #[serde(rename = "i")]
+    id: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -84,6 +105,64 @@ pub(super) async fn fetch_depth_snapshot(
         bids: snapshot.data.bids,
         asks: snapshot.data.asks,
     })
+}
+
+/// Fetch the recent public MEXC perpetual trades.
+///
+/// MEXC only exposes the latest 100 contract deals and does not provide a
+/// timestamp cursor on this endpoint. This is still enough to seed low-volume
+/// markets (notably index perpetuals) while their live WebSocket takes over.
+pub(super) async fn fetch_trades(
+    hub: &mut HttpHub<MexcLimiter>,
+    ticker_info: TickerInfo,
+    from_time: UnixMs,
+) -> Result<Vec<Trade>, AdapterError> {
+    let (symbol, market_type) = ticker_info.ticker.to_full_symbol_and_type();
+    if market_type == MarketKind::Spot {
+        return Err(AdapterError::InvalidRequest(
+            "MEXC recent trade fetch is only supported for perpetuals".to_string(),
+        ));
+    }
+
+    let url = format!("{FETCH_DOMAIN}/v1/contract/deals/{symbol}?limit=100");
+    let response_text = hub.http_text_with_limiter(&url, 1, None, None).await?;
+    parse_futures_trades(&response_text, ticker_info, from_time)
+}
+
+fn parse_futures_trades(
+    response_text: &str,
+    ticker_info: TickerInfo,
+    from_time: UnixMs,
+) -> Result<Vec<Trade>, AdapterError> {
+    let response: FuturesTradeResponse = sonic_rs::from_str(response_text)
+        .map_err(|error| AdapterError::ParseError(error.to_string()))?;
+    if !response.success || response.code != 0 {
+        return Err(AdapterError::InvalidRequest(format!(
+            "MEXC contract deals request failed with code {}",
+            response.code
+        )));
+    }
+
+    let qty_norm = QtyNormalization::with_raw_qty_unit(
+        volume_size_unit() == SizeUnit::Quote,
+        ticker_info,
+        raw_qty_unit_from_market_type(ticker_info.market_type()),
+    );
+    let mut trades = response
+        .data
+        .into_iter()
+        .filter(|trade| trade.time >= from_time.as_u64())
+        .map(|trade| Trade {
+            id: trade.id.and_then(|id| id.parse().ok()),
+            time: trade.time.into(),
+            is_sell: trade.direction == 2,
+            price: Price::from_f64(trade.price).round_to_min_tick(ticker_info.min_ticksize),
+            qty: qty_norm.normalize_qty(trade.qty, trade.price),
+        })
+        .collect::<Vec<_>>();
+    trades.sort_unstable_by_key(|trade| (trade.time, trade.id));
+
+    Ok(trades)
 }
 
 pub(super) async fn fetch_ticker_metadata(
@@ -504,4 +583,49 @@ pub(super) async fn fetch_klines(
     };
 
     klines_result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::Exchange;
+
+    fn ticker_info() -> TickerInfo {
+        TickerInfo::new(
+            Ticker::new("NAS100_USDT", Exchange::MexcLinear),
+            1.0,
+            1.0,
+            Some(0.0001),
+        )
+    }
+
+    #[test]
+    fn recent_futures_trades_are_filtered_normalized_and_sorted() {
+        let payload = r#"{
+            "success": true,
+            "code": 0,
+            "data": [
+                {"p": 29726, "v": 66, "T": 1, "t": 3000, "i": "103"},
+                {"p": 29725, "v": 65, "T": 2, "t": 2000, "i": "102"},
+                {"p": 29724, "v": 64, "T": 1, "t": 1000, "i": "101"}
+            ]
+        }"#;
+
+        let trades = parse_futures_trades(payload, ticker_info(), UnixMs(1500)).unwrap();
+
+        assert_eq!(trades.len(), 2);
+        assert_eq!(trades[0].id, Some(102));
+        assert_eq!(trades[0].time, UnixMs(2000));
+        assert!(trades[0].is_sell);
+        assert_eq!(trades[0].price, Price::from_f64(29725.0));
+        assert_eq!(trades[1].id, Some(103));
+        assert!(!trades[1].is_sell);
+    }
+
+    #[test]
+    fn failed_futures_trade_response_is_rejected() {
+        let payload = r#"{"success":false,"code":6005,"data":[]}"#;
+        let error = parse_futures_trades(payload, ticker_info(), UnixMs(0)).unwrap_err();
+        assert!(error.to_string().contains("6005"));
+    }
 }

@@ -402,8 +402,17 @@ impl WsAdapter for DepthAdapter {
     }
 
     async fn on_text(&mut self, payload: &[u8]) -> Result<Vec<Event>, String> {
-        self.sync_machine
-            .poll_snapshot_if_ready(self.ticker_info, self.qty_norm)?;
+        let mut events = Vec::new();
+        if let Some(snapshot_time) = self
+            .sync_machine
+            .poll_snapshot_if_ready(self.ticker_info, self.qty_norm)?
+        {
+            events.push(Event::DepthReceived(
+                self.stream,
+                snapshot_time.into(),
+                self.sync_machine.current.depth.clone(),
+            ));
+        }
 
         let ticker = self.ticker_info.ticker;
 
@@ -435,19 +444,37 @@ impl WsAdapter for DepthAdapter {
                 self.sync_machine
                     .handle_depth_update(diff, self.ticker_info, self.qty_norm)?
             {
-                return Ok(vec![Event::DepthReceived(
+                events.push(Event::DepthReceived(
                     self.stream,
                     update_time.into(),
                     self.sync_machine.current.depth.clone(),
-                )]);
+                ));
             }
         }
 
-        Ok(Vec::new())
+        Ok(events)
     }
 
     async fn on_disconnected(&mut self, _reason: &str) -> Vec<Event> {
         Vec::new()
+    }
+
+    async fn on_tick(&mut self) -> Vec<Event> {
+        match self
+            .sync_machine
+            .poll_snapshot_if_ready(self.ticker_info, self.qty_norm)
+        {
+            Ok(Some(snapshot_time)) => vec![Event::DepthReceived(
+                self.stream,
+                snapshot_time.into(),
+                self.sync_machine.current.depth.clone(),
+            )],
+            Ok(None) => Vec::new(),
+            Err(error) => {
+                log::warn!("MEXC depth snapshot synchronization failed: {error}");
+                Vec::new()
+            }
+        }
     }
 }
 
@@ -512,12 +539,13 @@ impl DepthSyncMachine {
         snapshot_result: Result<DepthPayload, AdapterError>,
         ticker_info: TickerInfo,
         qty_norm: QtyNormalization,
-    ) -> Result<(), String> {
+    ) -> Result<Option<u64>, String> {
         let snapshot = match snapshot_result {
             Ok(snapshot) => snapshot,
             Err(e) => return Err(format!("Depth fetch failed: {e}")),
         };
 
+        let mut latest_time = snapshot.time.as_u64();
         self.current.update_with_qty_norm(
             DepthUpdate::Snapshot(snapshot),
             ticker_info.min_ticksize,
@@ -546,10 +574,11 @@ impl DepthSyncMachine {
                 Some(qty_norm),
             );
             self.local_last_version = diff.version;
+            latest_time = diff.time;
         }
 
         self.state = DepthSyncState::Live;
-        Ok(())
+        Ok(Some(latest_time))
     }
 
     fn on_live_diff(
@@ -561,7 +590,6 @@ impl DepthSyncMachine {
         if diff.version <= self.local_last_version {
             return Ok(None);
         }
-
         let depth = DepthPayload {
             last_update_id: diff.version,
             time: diff.time.into(),
@@ -589,10 +617,10 @@ impl DepthSyncMachine {
         &mut self,
         ticker_info: TickerInfo,
         qty_norm: QtyNormalization,
-    ) -> Result<(), String> {
+    ) -> Result<Option<u64>, String> {
         let snapshot_result = {
             let DepthSyncState::WaitingSnapshot(snapshot_rx) = &mut self.state else {
-                return Ok(());
+                return Ok(None);
             };
 
             match snapshot_rx.try_recv() {
@@ -605,10 +633,10 @@ impl DepthSyncMachine {
         };
 
         if let Some(snapshot_result) = snapshot_result {
-            self.handle_snapshot_result(snapshot_result, ticker_info, qty_norm)?;
+            return self.handle_snapshot_result(snapshot_result, ticker_info, qty_norm);
         }
 
-        Ok(())
+        Ok(None)
     }
 
     fn handle_depth_update(
