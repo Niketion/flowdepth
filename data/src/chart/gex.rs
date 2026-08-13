@@ -482,11 +482,28 @@ pub struct GexScenarioPoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct GexProxyStrikeMapping {
+    pub source_strike: f64,
+    pub mapped_strike: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct GexProxyMetadata {
     pub source_symbol: String,
     pub target_symbol: String,
     pub source_spot: f64,
     pub target_spot: f64,
+    /// Timestamped target anchors are not available from every chart feed yet.
+    /// Keeping the field on the immutable mapping records the distinction and
+    /// allows those feeds to opt in without remapping historical observations.
+    #[serde(default)]
+    pub target_observed_at: Option<UnixMs>,
+    /// Concrete QuantWheel expirations used for this immutable observation.
+    #[serde(default)]
+    pub resolved_expirations: Arc<[String]>,
+    /// Exact source-to-target strike coordinates for this immutable mapping.
+    #[serde(default)]
+    pub strike_mappings: Arc<[GexProxyStrikeMapping]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -653,6 +670,9 @@ pub enum GexZoneState {
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct GexZoneBand {
+    /// Immutable source coordinate inherited from a proxy-mapped strike.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_strike: Option<f64>,
     pub strike: f64,
     pub lower_price: f64,
     pub upper_price: f64,
@@ -685,6 +705,11 @@ pub struct GexZone {
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct GexZoneFrame {
     pub bucket_start: UnixMs,
+    /// QuantWheel frames end at the next exact observation. `None` is the
+    /// semantically open final observation. Deribit frames always store their
+    /// existing candle-bucket end here.
+    #[serde(default)]
+    pub interval_end: Option<UnixMs>,
     pub source_spot: f64,
     pub zones: Arc<[GexZone]>,
 }
@@ -762,7 +787,9 @@ impl GexZone {
             && self.persistence_score.is_finite()
             && (0.0..=1.0).contains(&self.persistence_score)
             && self.bands.iter().all(|band| {
-                band.strike.is_finite()
+                band.source_strike
+                    .is_none_or(|strike| strike.is_finite() && strike > 0.0)
+                    && band.strike.is_finite()
                     && band.lower_price.is_finite()
                     && band.upper_price.is_finite()
                     && band.lower_price > 0.0
@@ -836,6 +863,12 @@ impl GexSnapshot {
                     && proxy.source_spot > 0.0
                     && proxy.target_spot.is_finite()
                     && proxy.target_spot > 0.0
+                    && proxy.strike_mappings.iter().all(|mapping| {
+                        mapping.source_strike.is_finite()
+                            && mapping.source_strike > 0.0
+                            && mapping.mapped_strike.is_finite()
+                            && mapping.mapped_strike > 0.0
+                    })
             })
     }
 }
@@ -910,6 +943,18 @@ pub fn map_proxy_snapshot(
         target_symbol: target_symbol.to_owned(),
         source_spot,
         target_spot,
+        target_observed_at: None,
+        resolved_expirations: Arc::from([]),
+        strike_mappings: source
+            .strikes
+            .iter()
+            .zip(mapped.strikes.iter())
+            .map(|(source, mapped)| GexProxyStrikeMapping {
+                source_strike: source.strike,
+                mapped_strike: mapped.strike,
+            })
+            .collect::<Vec<_>>()
+            .into(),
     });
     Some(mapped)
 }
@@ -1026,6 +1071,15 @@ mod proxy_mapping_tests {
         let mapped =
             map_proxy_snapshot(&snapshot(), "GLD", "XAUTUSDT", 4_000.0).expect("valid mapping");
         assert_eq!(mapped.strikes[0].strike, 4_050.0);
+        assert_eq!(mapped.proxy.as_ref().unwrap().strike_mappings.len(), 1);
+        assert_eq!(
+            mapped.proxy.as_ref().unwrap().strike_mappings[0].source_strike,
+            405.0
+        );
+        assert_eq!(
+            mapped.proxy.as_ref().unwrap().strike_mappings[0].mapped_strike,
+            4_050.0
+        );
         assert_eq!(mapped.call_wall, Some(4_100.0));
         assert_eq!(mapped.put_wall, Some(3_900.0));
         assert_eq!(mapped.gamma_flip, Some(4_020.0));
@@ -1957,6 +2011,7 @@ pub fn find_gamma_flip(
 struct ZoneStrike<'a> {
     index: usize,
     strike: &'a GexStrike,
+    source_strike: Option<f64>,
     sign: GexZoneSign,
     strength: f32,
     local_gap: f64,
@@ -1968,6 +2023,17 @@ pub fn extract_gex_zones(
     max_positive: u8,
     max_negative: u8,
 ) -> Vec<GexZone> {
+    let source_strikes = snapshot
+        .proxy
+        .as_ref()
+        .map(|proxy| {
+            proxy
+                .strike_mappings
+                .iter()
+                .map(|mapping| (mapping.mapped_strike.to_bits(), mapping.source_strike))
+                .collect::<FxHashMap<_, _>>()
+        })
+        .unwrap_or_default();
     let mut strikes = snapshot.strikes.iter().collect::<Vec<_>>();
     strikes.sort_by(|a, b| a.strike.total_cmp(&b.strike));
     if strikes.is_empty() {
@@ -2021,6 +2087,7 @@ pub fn extract_gex_zones(
         let candidate = ZoneStrike {
             index,
             strike,
+            source_strike: source_strikes.get(&strike.strike.to_bits()).copied(),
             sign,
             strength,
             local_gap,
@@ -2110,6 +2177,7 @@ fn zone_from_cluster(
                 snapshot.source_spot * 0.0015,
             );
             GexZoneBand {
+                source_strike: value.source_strike,
                 strike: value.strike.strike,
                 lower_price: value.strike.strike - half_width,
                 upper_price: value.strike.strike + half_width,
@@ -2229,6 +2297,173 @@ fn zone_matches(previous: &GexZone, current: &GexZone, spot: f64) -> bool {
             <= (spot * 0.002).max(combined_half_width)
 }
 
+#[derive(Debug)]
+struct ZoneSourceIdentity {
+    /// Canonical exact source-strike bits. Proxy mapping preserves the original
+    /// `f64` values, so matching does not need fuzzy reverse mapping.
+    members: Vec<u64>,
+    representative: u64,
+}
+
+fn zone_source_identity(zone: &GexZone) -> Option<ZoneSourceIdentity> {
+    let mut members = zone
+        .bands
+        .iter()
+        .map(|band| band.source_strike.map(f64::to_bits))
+        .collect::<Option<Vec<_>>>()?;
+    if members.is_empty() {
+        return None;
+    }
+    members.sort_unstable();
+    members.dedup();
+    let representative = zone
+        .bands
+        .iter()
+        .find(|band| band.strike.to_bits() == zone.peak_price.to_bits())
+        .and_then(|band| band.source_strike)
+        .map(f64::to_bits)?;
+    Some(ZoneSourceIdentity {
+        members,
+        representative,
+    })
+}
+
+#[derive(Debug)]
+struct QuantWheelMatchCandidate {
+    current_index: usize,
+    previous_index: usize,
+    /// 3 exact membership, 2 strong Jaccard overlap, 1 representative match,
+    /// 0 legacy spatial fallback when either side lacks source identity.
+    source_tier: u8,
+    source_similarity: f64,
+    intersection_count: usize,
+    representative_match: bool,
+    spatial_overlap: f64,
+    peak_distance: f64,
+    current_strength: f64,
+    previous_id: u64,
+}
+
+fn quantwheel_match_candidate(
+    current_index: usize,
+    current: &GexZone,
+    current_source: Option<&ZoneSourceIdentity>,
+    previous_index: usize,
+    previous: &GexZone,
+    previous_source: Option<&ZoneSourceIdentity>,
+    spot: f64,
+) -> Option<QuantWheelMatchCandidate> {
+    if previous.sign != current.sign {
+        return None;
+    }
+    let (source_tier, source_similarity, intersection_count, representative_match) =
+        match (previous_source, current_source) {
+            (Some(previous), Some(current)) => {
+                if previous.members == current.members {
+                    (3, 1.0, previous.members.len(), true)
+                } else {
+                    let intersection_count = previous
+                        .members
+                        .iter()
+                        .filter(|member| current.members.binary_search(member).is_ok())
+                        .count();
+                    let union_count =
+                        previous.members.len() + current.members.len() - intersection_count;
+                    let jaccard = intersection_count as f64 / union_count.max(1) as f64;
+                    let representative_match = previous.representative == current.representative;
+                    if jaccard >= 0.50 {
+                        (2, jaccard, intersection_count, representative_match)
+                    } else if representative_match {
+                        (1, jaccard, intersection_count, true)
+                    } else {
+                        // Explicit but unrelated source clusters must never match
+                        // merely because their mapped target regions overlap.
+                        return None;
+                    }
+                }
+            }
+            _ if zone_matches(previous, current, spot) => (0, 0.0, 0, false),
+            _ => return None,
+        };
+    Some(QuantWheelMatchCandidate {
+        current_index,
+        previous_index,
+        source_tier,
+        source_similarity,
+        intersection_count,
+        representative_match,
+        spatial_overlap: zone_overlap_ratio(previous, current),
+        peak_distance: (previous.peak_price - current.peak_price).abs(),
+        current_strength: current.absolute_gex_1pct,
+        previous_id: previous.id,
+    })
+}
+
+fn assign_quantwheel_zone_ids(
+    current: &mut [GexZone],
+    previous: &[GexZone],
+    spot: f64,
+) -> FxHashSet<usize> {
+    let current_sources = current.iter().map(zone_source_identity).collect::<Vec<_>>();
+    let previous_sources = previous
+        .iter()
+        .map(zone_source_identity)
+        .collect::<Vec<_>>();
+    let mut candidates = Vec::new();
+    for (current_index, zone) in current.iter().enumerate() {
+        for (previous_index, old) in previous.iter().enumerate() {
+            if let Some(candidate) = quantwheel_match_candidate(
+                current_index,
+                zone,
+                current_sources[current_index].as_ref(),
+                previous_index,
+                old,
+                previous_sources[previous_index].as_ref(),
+                spot,
+            ) {
+                candidates.push(candidate);
+            }
+        }
+    }
+    candidates.sort_by(|a, b| {
+        b.source_tier
+            .cmp(&a.source_tier)
+            .then_with(|| b.source_similarity.total_cmp(&a.source_similarity))
+            .then_with(|| b.intersection_count.cmp(&a.intersection_count))
+            .then_with(|| b.representative_match.cmp(&a.representative_match))
+            .then_with(|| b.spatial_overlap.total_cmp(&a.spatial_overlap))
+            .then_with(|| a.peak_distance.total_cmp(&b.peak_distance))
+            .then_with(|| b.current_strength.total_cmp(&a.current_strength))
+            .then_with(|| a.previous_id.cmp(&b.previous_id))
+            .then_with(|| a.current_index.cmp(&b.current_index))
+    });
+    let mut used_current = FxHashSet::default();
+    let mut used_previous = FxHashSet::default();
+    for candidate in candidates {
+        if used_current.insert(candidate.current_index)
+            && used_previous.insert(candidate.previous_index)
+        {
+            current[candidate.current_index].id = previous[candidate.previous_index].id;
+        }
+    }
+    used_previous
+}
+
+fn same_quantwheel_series(previous: &GexSnapshot, current: &GexSnapshot) -> bool {
+    previous.provider == current.provider
+        && previous.underlying == current.underlying
+        && previous.expiry_filter == current.expiry_filter
+        && previous.gamma_source == current.gamma_source
+        && match (&previous.proxy, &current.proxy) {
+            (Some(previous), Some(current)) => {
+                previous.source_symbol == current.source_symbol
+                    && previous.target_symbol == current.target_symbol
+            }
+            (None, None) => true,
+            _ => false,
+        }
+}
+
 pub fn build_gex_zone_frames(
     history: &[Arc<GexSnapshot>],
     bucket_ms: u64,
@@ -2342,11 +2577,109 @@ pub fn build_gex_zone_frames(
         current.sort_by_key(|zone| zone.id);
         frames.push(GexZoneFrame {
             bucket_start,
+            interval_end: Some(bucket_start.saturating_add(bucket_ms)),
             source_spot: snapshot.source_spot,
             zones: current.clone().into(),
         });
         previous = current;
         previous_bucket = Some(bucket_start);
+    }
+    frames
+}
+
+/// Builds knowledge-time intervals for QuantWheel observations.
+///
+/// Unlike [`build_gex_zone_frames`], this function never rounds, buckets, or
+/// deduplicates observations. Each accepted observation starts at its exact
+/// local response-completion timestamp and ends at the next observation. The
+/// final interval is deliberately open-ended.
+pub fn build_quantwheel_gex_intervals(
+    history: &[Arc<GexSnapshot>],
+    config: &GexLevelsConfig,
+) -> Vec<GexZoneFrame> {
+    let mut snapshots = history.iter().enumerate().collect::<Vec<_>>();
+    snapshots.sort_by(|(left_index, left), (right_index, right)| {
+        left.observed_at
+            .cmp(&right.observed_at)
+            .then_with(|| left_index.cmp(right_index))
+    });
+    let mut frames = Vec::with_capacity(snapshots.len());
+    let mut previous: Vec<GexZone> = Vec::new();
+    let mut track_history: FxHashMap<u64, Vec<(UnixMs, f32)>> = FxHashMap::default();
+
+    for (index, (_, snapshot)) in snapshots.iter().enumerate() {
+        let start = snapshot.observed_at;
+        let end = snapshots.get(index + 1).map(|(_, next)| next.observed_at);
+        if index > 0 && !same_quantwheel_series(snapshots[index - 1].1, snapshot) {
+            previous.clear();
+        }
+        let mut current = extract_gex_zones(
+            snapshot,
+            config.minimum_zone_strength,
+            config.max_positive_zones,
+            config.max_negative_zones,
+        );
+        let used_previous =
+            assign_quantwheel_zone_ids(&mut current, &previous, snapshot.source_spot);
+        let lookback_ms = u64::from(config.persistent_lookback_minutes.clamp(1, 60)) * 60_000;
+        let cutoff = start.saturating_sub(lookback_ms);
+        let expected_observations = snapshots[..=index]
+            .iter()
+            .filter(|(_, value)| value.observed_at >= cutoff)
+            .count()
+            .max(1) as f32;
+        for (ordinal, zone) in current.iter_mut().enumerate() {
+            if zone.id == 0 {
+                zone.id = deterministic_zone_id(start, zone, ordinal);
+            }
+            let entries = track_history.entry(zone.id).or_default();
+            entries.retain(|(time, _)| *time >= cutoff);
+            let presence_ratio = (entries.len() as f32 / expected_observations).clamp(0.0, 1.0);
+            let average_strength = if entries.is_empty() {
+                0.0
+            } else {
+                entries.iter().map(|(_, strength)| *strength).sum::<f32>() / entries.len() as f32
+            };
+            zone.persistence_score =
+                (0.50 * zone.normalized_strength + 0.30 * presence_ratio + 0.20 * average_strength)
+                    .clamp(0.0, 1.0);
+            entries.push((start, zone.normalized_strength));
+        }
+        for (previous_index, zone) in previous.iter().enumerate() {
+            if used_previous.contains(&previous_index) {
+                continue;
+            }
+            let missing = zone.missing_buckets.saturating_add(1);
+            if missing < config.fade_buckets.clamp(1, 3) {
+                let mut fading = zone.clone();
+                fading.state = GexZoneState::Fading;
+                fading.missing_buckets = missing;
+                current.push(fading);
+            }
+        }
+        current.retain(|zone| {
+            zone.normalized_strength >= config.minimum_zone_strength
+                || zone.persistence_score >= 0.25
+                || zone.state == GexZoneState::Fading
+        });
+        limit_tracked_zones(
+            &mut current,
+            GexZoneSign::Positive,
+            config.max_positive_zones,
+        );
+        limit_tracked_zones(
+            &mut current,
+            GexZoneSign::Negative,
+            config.max_negative_zones,
+        );
+        current.sort_by_key(|zone| zone.id);
+        frames.push(GexZoneFrame {
+            bucket_start: start,
+            interval_end: end,
+            source_spot: snapshot.source_spot,
+            zones: current.clone().into(),
+        });
+        previous = current;
     }
     frames
 }
@@ -3091,6 +3424,55 @@ mod tests {
         })
     }
 
+    fn quantwheel_zone_snapshot(observed_at: u64, values: &[(f64, f64)]) -> Arc<GexSnapshot> {
+        let mut snapshot = zone_snapshot(observed_at, values);
+        {
+            let value = Arc::make_mut(&mut snapshot);
+            value.provider = OptionsProvider::QuantWheel;
+            value.underlying = OptionsUnderlying::Ndx;
+            value.gamma_source = GexGammaSource::ProviderNativePreferred;
+            Arc::make_mut(&mut value.strikes)
+                .iter_mut()
+                .for_each(|strike| strike.gamma_provenance = GexGammaProvenance::Native);
+            value.gamma_provenance = GexGammaProvenance::Native;
+        }
+        snapshot
+    }
+
+    fn mapped_quantwheel_zone_snapshot(
+        observed_at: u64,
+        source_spot: f64,
+        target_spot: f64,
+        values: &[(f64, f64)],
+    ) -> Arc<GexSnapshot> {
+        let mut source = quantwheel_zone_snapshot(observed_at, values);
+        Arc::make_mut(&mut source).source_spot = source_spot;
+        Arc::new(
+            map_proxy_snapshot(&source, "NDX", "NAS100", target_spot)
+                .expect("valid QuantWheel proxy mapping"),
+        )
+    }
+
+    fn zone_source_members(zone: &GexZone) -> Vec<f64> {
+        let mut members = zone
+            .bands
+            .iter()
+            .filter_map(|band| band.source_strike)
+            .collect::<Vec<_>>();
+        members.sort_by(f64::total_cmp);
+        members
+    }
+
+    fn active_zone_with_sources<'a>(frame: &'a GexZoneFrame, expected: &[f64]) -> &'a GexZone {
+        frame
+            .zones
+            .iter()
+            .find(|zone| {
+                zone.state == GexZoneState::Active && zone_source_members(zone) == expected
+            })
+            .expect("active zone with expected source members")
+    }
+
     fn proxy_point(
         observed_at: i64,
         total_gex: f64,
@@ -3369,6 +3751,268 @@ mod tests {
         let frames = build_gex_zone_frames(&history, 300_000, &GexLevelsConfig::default());
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].zones[0].peak_price, 72_000.0);
+    }
+
+    #[test]
+    fn quantwheel_intervals_preserve_exact_times_and_same_candle_observations() {
+        let history = vec![
+            quantwheel_zone_snapshot(81_677_000, &[(29_700.0, 8.0)]),
+            quantwheel_zone_snapshot(84_000_000, &[(29_730.0, 12.0)]),
+        ];
+        let frames = build_quantwheel_gex_intervals(&history, &GexLevelsConfig::default());
+
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].bucket_start, UnixMs::new(81_677_000));
+        assert_eq!(frames[0].interval_end, Some(UnixMs::new(84_000_000)));
+        assert_eq!(frames[1].bucket_start, UnixMs::new(84_000_000));
+        assert_eq!(frames[1].interval_end, None);
+        assert_eq!(frames[0].zones[0].peak_price, 29_700.0);
+        assert_eq!(frames[1].zones[0].peak_price, 29_730.0);
+    }
+
+    #[test]
+    fn quantwheel_interval_semantics_are_timeframe_independent_and_keep_equal_times() {
+        let history = vec![
+            quantwheel_zone_snapshot(81_000_000, &[(29_700.0, 8.0)]),
+            quantwheel_zone_snapshot(81_000_000, &[(29_710.0, 9.0)]),
+            quantwheel_zone_snapshot(84_000_000, &[(29_730.0, 12.0)]),
+        ];
+        let expected = build_quantwheel_gex_intervals(&history, &GexLevelsConfig::default());
+
+        for _chart_timeframe_ms in [60_000, 300_000, 900_000, 3_600_000] {
+            let actual = build_quantwheel_gex_intervals(&history, &GexLevelsConfig::default());
+            assert_eq!(actual, expected);
+        }
+        assert_eq!(expected.len(), 3);
+        assert_eq!(expected[0].interval_end, Some(UnixMs::new(81_000_000)));
+        assert_eq!(expected[1].interval_end, Some(UnixMs::new(84_000_000)));
+    }
+
+    #[test]
+    fn quantwheel_source_identity_beats_mapped_spatial_collision_and_survives_zone_cap() {
+        let values = &[
+            (29_750.0, 10.0),
+            (29_760.0, 0.0),
+            (29_770.0, 9.0),
+            (29_775.0, 8.0),
+        ];
+        let history = vec![
+            mapped_quantwheel_zone_snapshot(1_000, 30_000.0, 30_000.0, values),
+            // This anchor places current 29_750 spatially on top of the old
+            // 29_770 zone, reproducing the live collision.
+            mapped_quantwheel_zone_snapshot(2_000, 30_000.0, 30_021.0, values),
+        ];
+        let config = GexLevelsConfig {
+            max_positive_zones: 2,
+            fade_buckets: 2,
+            ..GexLevelsConfig::default()
+        };
+        let frames = build_quantwheel_gex_intervals(&history, &config);
+        let previous_29_750 = active_zone_with_sources(&frames[0], &[29_750.0]);
+        let previous_29_770 = active_zone_with_sources(&frames[0], &[29_770.0, 29_775.0]);
+        let current_29_750 = active_zone_with_sources(&frames[1], &[29_750.0]);
+        let current_29_770 = active_zone_with_sources(&frames[1], &[29_770.0, 29_775.0]);
+
+        assert!(
+            (current_29_750.peak_price - previous_29_770.peak_price).abs()
+                < (current_29_750.peak_price - previous_29_750.peak_price).abs()
+        );
+        assert_eq!(current_29_750.id, previous_29_750.id);
+        assert_eq!(current_29_770.id, previous_29_770.id);
+        assert_eq!(frames[1].zones.len(), 2);
+        assert!(
+            frames[1]
+                .zones
+                .iter()
+                .all(|zone| zone.state == GexZoneState::Active)
+        );
+    }
+
+    #[test]
+    fn quantwheel_source_overlap_tracks_small_cluster_membership_change() {
+        let history = vec![
+            mapped_quantwheel_zone_snapshot(
+                1_000,
+                30_000.0,
+                30_000.0,
+                &[
+                    (29_870.0, 10.0),
+                    (29_875.0, 9.0),
+                    (29_880.0, 8.0),
+                    (29_890.0, 7.0),
+                    (29_900.0, 6.0),
+                ],
+            ),
+            mapped_quantwheel_zone_snapshot(
+                2_000,
+                30_000.0,
+                30_030.0,
+                &[
+                    (29_870.0, 10.0),
+                    (29_875.0, 9.0),
+                    (29_880.0, 8.0),
+                    (29_890.0, 7.0),
+                    // Retain the neighboring strike in raw extraction so the
+                    // local-gap geometry is unchanged, but drop it below the
+                    // configured strength threshold in this observation.
+                    (29_900.0, 0.01),
+                ],
+            ),
+        ];
+        let frames = build_quantwheel_gex_intervals(&history, &GexLevelsConfig::default());
+        let previous = active_zone_with_sources(
+            &frames[0],
+            &[29_870.0, 29_875.0, 29_880.0, 29_890.0, 29_900.0],
+        );
+        let current =
+            active_zone_with_sources(&frames[1], &[29_870.0, 29_875.0, 29_880.0, 29_890.0]);
+        assert_eq!(current.id, previous.id);
+    }
+
+    #[test]
+    fn quantwheel_disjoint_explicit_sources_do_not_use_spatial_fallback() {
+        let history = vec![
+            mapped_quantwheel_zone_snapshot(
+                1_000,
+                30_000.0,
+                30_000.0,
+                &[(29_770.0, 10.0), (29_775.0, 9.0)],
+            ),
+            mapped_quantwheel_zone_snapshot(2_000, 30_000.0, 30_021.0, &[(29_750.0, 10.0)]),
+        ];
+        let frames = build_quantwheel_gex_intervals(&history, &GexLevelsConfig::default());
+        let previous = active_zone_with_sources(&frames[0], &[29_770.0, 29_775.0]);
+        let current = active_zone_with_sources(&frames[1], &[29_750.0]);
+
+        assert!((current.peak_price - previous.peak_price).abs() < 2.0);
+        assert_ne!(current.id, previous.id);
+    }
+
+    #[test]
+    fn quantwheel_identity_does_not_cross_expiry_series() {
+        let first = mapped_quantwheel_zone_snapshot(1_000, 30_000.0, 30_000.0, &[(29_750.0, 10.0)]);
+        let mut second =
+            mapped_quantwheel_zone_snapshot(2_000, 30_000.0, 30_000.0, &[(29_750.0, 10.0)]);
+        Arc::make_mut(&mut second).expiry_filter = GexExpiryFilter::ThreeDays;
+        let frames = build_quantwheel_gex_intervals(&[first, second], &GexLevelsConfig::default());
+
+        assert_ne!(frames[0].zones[0].id, frames[1].zones[0].id);
+        assert!(
+            frames[1]
+                .zones
+                .iter()
+                .all(|zone| zone.state == GexZoneState::Active)
+        );
+    }
+
+    #[test]
+    fn quantwheel_split_and_merge_have_single_deterministic_inheritance() {
+        let split = vec![
+            mapped_quantwheel_zone_snapshot(
+                1_000,
+                30_000.0,
+                30_000.0,
+                &[(29_770.0, 9.0), (29_775.0, 10.0)],
+            ),
+            mapped_quantwheel_zone_snapshot(
+                2_000,
+                30_000.0,
+                30_000.0,
+                &[(29_770.0, 9.0), (29_772.5, 0.0), (29_775.0, 10.0)],
+            ),
+        ];
+        let split_frames = build_quantwheel_gex_intervals(&split, &GexLevelsConfig::default());
+        let parent = active_zone_with_sources(&split_frames[0], &[29_770.0, 29_775.0]);
+        assert_eq!(
+            active_zone_with_sources(&split_frames[1], &[29_775.0]).id,
+            parent.id
+        );
+        assert_ne!(
+            active_zone_with_sources(&split_frames[1], &[29_770.0]).id,
+            parent.id
+        );
+
+        let merge = vec![
+            mapped_quantwheel_zone_snapshot(
+                1_000,
+                30_000.0,
+                30_000.0,
+                &[(29_770.0, 9.0), (29_772.5, 0.0), (29_775.0, 10.0)],
+            ),
+            mapped_quantwheel_zone_snapshot(
+                2_000,
+                30_000.0,
+                30_000.0,
+                &[(29_770.0, 9.0), (29_775.0, 10.0)],
+            ),
+        ];
+        let merge_frames = build_quantwheel_gex_intervals(&merge, &GexLevelsConfig::default());
+        let dominant_predecessor = active_zone_with_sources(&merge_frames[0], &[29_775.0]);
+        let merged = active_zone_with_sources(&merge_frames[1], &[29_770.0, 29_775.0]);
+        assert_eq!(merged.id, dominant_predecessor.id);
+    }
+
+    #[test]
+    fn quantwheel_sign_flip_starts_a_new_active_identity() {
+        let history = vec![
+            mapped_quantwheel_zone_snapshot(1_000, 30_000.0, 30_000.0, &[(30_000.0, 10.0)]),
+            mapped_quantwheel_zone_snapshot(2_000, 30_000.0, 30_000.0, &[(30_000.0, -10.0)]),
+        ];
+        let frames = build_quantwheel_gex_intervals(&history, &GexLevelsConfig::default());
+        let positive_id = active_zone_with_sources(&frames[0], &[30_000.0]).id;
+        let negative = active_zone_with_sources(&frames[1], &[30_000.0]);
+        assert_eq!(negative.sign, GexZoneSign::Negative);
+        assert_ne!(negative.id, positive_id);
+        assert!(!frames[1].zones.iter().any(|zone| {
+            zone.sign == GexZoneSign::Positive && zone.state == GexZoneState::Active
+        }));
+    }
+
+    #[test]
+    fn quantwheel_stable_source_identity_does_not_freeze_mapped_price() {
+        let history = [29_737.342, 29_734.347, 29_751.322]
+            .into_iter()
+            .enumerate()
+            .map(|(index, target_spot)| {
+                mapped_quantwheel_zone_snapshot(
+                    1_000 + index as u64 * 1_000,
+                    29_700.0,
+                    target_spot,
+                    &[(29_700.0, 10.0)],
+                )
+            })
+            .collect::<Vec<_>>();
+        let frames = build_quantwheel_gex_intervals(&history, &GexLevelsConfig::default());
+        let zones = frames
+            .iter()
+            .map(|frame| active_zone_with_sources(frame, &[29_700.0]))
+            .collect::<Vec<_>>();
+
+        assert!(zones.windows(2).all(|pair| pair[0].id == pair[1].id));
+        let expected = [29_737.342, 29_734.347, 29_751.322];
+        assert!(
+            zones
+                .iter()
+                .zip(expected)
+                .all(|(zone, expected)| (zone.peak_price - expected).abs() < 1.0e-9)
+        );
+    }
+
+    #[test]
+    fn deribit_bucket_frames_retain_existing_count_and_boundaries() {
+        let history = vec![
+            zone_snapshot(300_001, &[(70_000.0, 8.0)]),
+            zone_snapshot(450_001, &[(72_000.0, 12.0)]),
+            zone_snapshot(600_001, &[(73_000.0, 10.0)]),
+        ];
+        let frames = build_gex_zone_frames(&history, 300_000, &GexLevelsConfig::default());
+
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].bucket_start, UnixMs::new(300_000));
+        assert_eq!(frames[0].interval_end, Some(UnixMs::new(600_000)));
+        assert_eq!(frames[0].zones[0].peak_price, 72_000.0);
+        assert_eq!(frames[1].bucket_start, UnixMs::new(600_000));
+        assert_eq!(frames[1].interval_end, Some(UnixMs::new(900_000)));
     }
 
     #[test]

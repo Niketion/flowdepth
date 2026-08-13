@@ -362,7 +362,7 @@ impl Dashboard {
                             exchange::options::GexSource::Proxy {
                                 provider: exchange::options::OptionsProvider::QuantWheel,
                                 source_symbol,
-                                target_symbol,
+                                target_symbol: _,
                                 price_mapping: exchange::options::GexPriceMapping::SpotRatio,
                             } if matches!(
                                 source_symbol,
@@ -370,14 +370,13 @@ impl Dashboard {
                                     | exchange::options::OptionsUnderlying::Ndx
                             ) =>
                             {
-                                let target = chart
-                                    .liquidity_reference()
-                                    .map(|ticker| ticker.ticker.display_symbol_and_type().0)
-                                    .unwrap_or_else(|| target_symbol.to_owned());
+                                let target =
+                                    chart.liquidity_reference().map(|ticker| ticker.ticker);
                                 let snapshot = chart.proxy_target_spot().and_then(|target_spot| {
                                     coordinator.mapped_quantwheel(
                                         source_symbol,
-                                        &target,
+                                        chart.config().expiry_filter,
+                                        target?,
                                         target_spot,
                                     )
                                 });
@@ -476,7 +475,7 @@ impl Dashboard {
                             exchange::options::GexSource::Proxy {
                                 provider: exchange::options::OptionsProvider::QuantWheel,
                                 source_symbol,
-                                target_symbol,
+                                target_symbol: _,
                                 price_mapping: exchange::options::GexPriceMapping::SpotRatio,
                             } if matches!(
                                 source_symbol,
@@ -498,15 +497,22 @@ impl Dashboard {
                                     );
                                     return;
                                 };
-                                let target = market
-                                    .map(|ticker| ticker.ticker.display_symbol_and_type().0)
-                                    .unwrap_or_else(|| target_symbol.to_owned());
+                                let Some(target) = market.map(|ticker| ticker.ticker) else {
+                                    return;
+                                };
                                 let snapshot = coordinator
-                                    .mapped_quantwheel(source_symbol, &target, target_spot)
+                                    .mapped_quantwheel(
+                                        source_symbol,
+                                        levels.expiry_filter,
+                                        target,
+                                        target_spot,
+                                    )
                                     .or_else(|| {
                                         coordinator
                                             .mapped_quantwheel_history(
                                                 source_symbol,
+                                                levels.expiry_filter,
+                                                target,
                                                 levels.history_minutes,
                                                 now,
                                             )
@@ -515,6 +521,8 @@ impl Dashboard {
                                     });
                                 let history = coordinator.mapped_quantwheel_history(
                                     source_symbol,
+                                    levels.expiry_filter,
+                                    target,
                                     levels.history_minutes,
                                     now,
                                 );
@@ -2171,6 +2179,7 @@ impl Dashboard {
         &mut self,
         stream: &StreamKind,
         kline: &Kline,
+        received_at: UnixMs,
         main_window: window::Id,
     ) -> Task<Message> {
         // Track last live timestamp for backfill on disconnect.
@@ -2193,7 +2202,7 @@ impl Dashboard {
                     matched_panes += 1;
                     match &mut pane_state.content {
                         pane::Content::Kline { chart: Some(c), .. } => {
-                            c.update_latest_kline(kline);
+                            c.update_latest_kline(kline, received_at);
                         }
                         pane::Content::Comparison(Some(c)) => {
                             c.update_latest_kline(&stream.ticker_info(), kline);

@@ -1048,7 +1048,9 @@ impl Flowsurface {
                         return task;
                     }
                     exchange::Event::KlineReceived(stream, kline) => {
-                        let now = exchange::UnixMs::now();
+                        // This is the chart's receive-time watermark for a live
+                        // kline update, captured as the event is handled.
+                        let received_at = exchange::UnixMs::now();
                         log::trace!(
                             "WS KlineReceived | stream={} kline_t={} open={:?} high={:?} low={:?} close={:?} volume={:?} lag_ms={}",
                             crate::connector::fetcher::format_stream(&stream),
@@ -1058,10 +1060,10 @@ impl Flowsurface {
                             kline.low,
                             kline.close,
                             kline.volume,
-                            now.saturating_diff(kline.time)
+                            received_at.saturating_diff(kline.time)
                         );
                         return dashboard
-                            .update_latest_klines(&stream, &kline, main_window_id)
+                            .update_latest_klines(&stream, &kline, received_at, main_window_id)
                             .map(move |msg| Message::Dashboard {
                                 layout_id: None,
                                 event: msg,

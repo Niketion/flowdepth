@@ -272,6 +272,11 @@ impl QuantWheelGexClient {
             quota.remaining = Some(0);
         }
         let body = response.text().await.map_err(QuantWheelError::Request)?;
+        // Knowledge time for the live overlay is the earliest reliable local
+        // point at which the complete successful response body is available.
+        // Capture it before JSON decoding and validation so parse cost cannot
+        // backdate or delay the observation semantically.
+        let observed_at = UnixMs::now();
         if !status.is_success() {
             return Err(QuantWheelError::Http {
                 status: status.as_u16(),
@@ -281,7 +286,7 @@ impl QuantWheelGexClient {
         }
         let dto: QuantWheelResponseDto =
             serde_json::from_str(&body).map_err(QuantWheelError::Decode)?;
-        let snapshot = dto.validate(underlying, UnixMs::now())?;
+        let snapshot = dto.validate(underlying, observed_at)?;
         log::info!(
             "GEX SnapshotRefreshed underlying={underlying} provider=QuantWheel levels={} expirations={} observed_at={}",
             snapshot.levels.len(),

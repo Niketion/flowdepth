@@ -291,6 +291,12 @@ pub struct KlineChart {
     chart: ViewState,
     data_source: PlotData<KlineDataPoint>,
     raw_trades: Vec<Trade>,
+    /// Latest timestamp backed by market data retained by this chart.
+    ///
+    /// Live trades advance this with their exchange timestamps. Live kline
+    /// updates advance it with the timestamp at which the application received
+    /// the update. It is deliberately independent of candle geometry.
+    latest_market_data_time: UnixMs,
     /// True once raw retention has discarded executions. Covered fetch ranges
     /// may then extend further back than the raw data still held in memory.
     raw_trades_pruned: bool,
@@ -368,6 +374,12 @@ impl KlineChart {
                 let latest_x = timeseries
                     .latest_timestamp()
                     .map_or(0, |timestamp| timestamp.as_u64());
+                let latest_market_data_time = raw_trades
+                    .iter()
+                    .map(|trade| trade.time)
+                    .max()
+                    .unwrap_or_default()
+                    .max(UnixMs::new(latest_x));
                 let (scale_high, scale_low) = timeseries.price_scale({
                     match &kind {
                         KlineChartKind::Footprint { .. } => 12,
@@ -441,6 +453,7 @@ impl KlineChart {
                     visual_config,
                     data_source,
                     raw_trades,
+                    latest_market_data_time,
                     raw_trades_pruned: false,
                     live_trade_buckets: FxHashSet::default(),
                     covered_trade_ranges: Vec::new(),
@@ -501,6 +514,11 @@ impl KlineChart {
                 chart.translation.x = x_translation;
 
                 let data_source = PlotData::TickBased(TickAggr::new(interval, step, &[]));
+                let latest_market_data_time = raw_trades
+                    .iter()
+                    .map(|trade| trade.time)
+                    .max()
+                    .unwrap_or_default();
 
                 let mut indicators = EnumMap::default();
                 for &i in enabled_indicators {
@@ -518,6 +536,7 @@ impl KlineChart {
                     visual_config,
                     data_source,
                     raw_trades,
+                    latest_market_data_time,
                     raw_trades_pruned: false,
                     live_trade_buckets: FxHashSet::default(),
                     covered_trade_ranges: Vec::new(),
@@ -546,7 +565,7 @@ impl KlineChart {
         }
     }
 
-    pub fn update_latest_kline(&mut self, kline: &Kline) {
+    pub fn update_latest_kline(&mut self, kline: &Kline, received_at: UnixMs) {
         match self.data_source {
             PlotData::TimeBased(ref mut timeseries) => {
                 let previous_latest_x = self.chart.latest_x;
@@ -566,6 +585,12 @@ impl KlineChart {
                     .values_mut()
                     .filter_map(Option::as_mut)
                     .for_each(|indi| indi.on_insert_klines(&[*kline], &self.data_source));
+
+                if kline.time.as_u64() >= previous_latest_x {
+                    self.latest_market_data_time = self
+                        .latest_market_data_time
+                        .max(received_at.max(kline.time));
+                }
 
                 let chart = self.mut_state();
 
@@ -1888,6 +1913,9 @@ impl KlineChart {
             "live_stream",
             Some(self.chart.ticker_info),
         );
+        if let Some(latest_trade_time) = buffer.iter().map(|trade| trade.time).max() {
+            self.latest_market_data_time = self.latest_market_data_time.max(latest_trade_time);
+        }
         if self.chart.ticker_info.exchange() == exchange::adapter::Exchange::BinanceLinear
             && let PlotData::TimeBased(timeseries) = &self.data_source
         {
@@ -2745,6 +2773,7 @@ impl canvas::Program<Message> for KlineChart {
                             &self.visual_config.gex_levels(),
                             latest,
                             chart.latest_x,
+                            self.latest_market_data_time.as_u64(),
                             proxy_asset,
                             region,
                             chart.scaling,
@@ -2888,6 +2917,7 @@ impl canvas::Program<Message> for KlineChart {
                             &self.gex_render_cache,
                             &self.visual_config.gex_levels(),
                             chart_interval_ms,
+                            self.latest_market_data_time.as_u64(),
                             region,
                             chart.scaling,
                             palette,
@@ -2946,6 +2976,7 @@ impl canvas::Program<Message> for KlineChart {
                         &self.gex_proxy_history,
                         &self.gex_render_cache,
                         &self.visual_config.gex_levels(),
+                        self.latest_market_data_time,
                         cursor_position,
                         bounds_size,
                         palette,
@@ -3006,6 +3037,7 @@ fn draw_gex_hover_tooltip(
     proxy_history: &[Arc<exchange::options::gex_monitor::GexProxyHistoryPoint>],
     render_cache: &RefCell<GexRenderCache>,
     config: &data::chart::gex::GexLevelsConfig,
+    latest_market_data_time: UnixMs,
     cursor: Point,
     bounds: Size,
     palette: &Extended,
@@ -3028,6 +3060,7 @@ fn draw_gex_hover_tooltip(
         history,
         render_cache,
         config,
+        latest_market_data_time,
         cursor,
         bounds,
         palette,
@@ -3108,6 +3141,7 @@ fn draw_gex_zone_tooltip(
     history: &[Arc<data::chart::gex::GexSnapshot>],
     render_cache: &RefCell<GexRenderCache>,
     config: &data::chart::gex::GexLevelsConfig,
+    latest_market_data_time: UnixMs,
     cursor: Point,
     bounds: Size,
     palette: &Extended,
@@ -3125,12 +3159,9 @@ fn draw_gex_zone_tooltip(
         Basis::Tick(_) => 60_000,
     };
     let frames = cached_gex_zone_frames(history, bucket_ms, config, render_cache);
-    let bucket =
-        data::chart::gex::gex_bucket_start(UnixMs::new(chart.x_to_interval(world.x)), bucket_ms);
-    let frame_index = frames.partition_point(|value| value.bucket_start < bucket);
-    let zone_frame = if frame_index < frames.len() && frames[frame_index].bucket_start == bucket {
-        &frames[frame_index]
-    } else {
+    let cursor_time = UnixMs::new(chart.x_to_interval(world.x));
+    let time_model = gex_time_model(history, latest_market_data_time);
+    let Some(zone_frame) = gex_zone_frame_at(&frames, cursor_time, time_model) else {
         return false;
     };
     let hovered_price = chart.y_to_price(world.y).to_f64();
@@ -3139,9 +3170,19 @@ fn draw_gex_zone_tooltip(
             * (1.0 - gex_profile_width_percent(config.current_profile_width_percent) / 100.0);
     let mut lines = Vec::new();
     if profile_hover && config.show_current_profile {
-        let Some(snapshot) = history.iter().rev().find(|snapshot| {
-            snapshot.observed_at <= zone_frame.bucket_start.saturating_add(bucket_ms)
-        }) else {
+        let snapshot_time = if history.first().is_some_and(|snapshot| {
+            snapshot.provider == exchange::options::OptionsProvider::QuantWheel
+        }) {
+            cursor_time
+        } else {
+            // Preserve Deribit's existing candle-bucket profile selection.
+            zone_frame.interval_end.unwrap_or(cursor_time)
+        };
+        let Some(snapshot) = history
+            .iter()
+            .rev()
+            .find(|snapshot| snapshot.observed_at <= snapshot_time)
+        else {
             return false;
         };
         let Some(strike) = snapshot.strikes.iter().min_by(|a, b| {
@@ -3247,8 +3288,9 @@ fn draw_gex_overlay_background(
     freshness: data::chart::gex::GexFreshness,
     render_cache: &RefCell<GexRenderCache>,
     config: &data::chart::gex::GexLevelsConfig,
-    latest_candle_time: u64,
+    visible_latest_time: u64,
     actual_latest_candle_time: u64,
+    latest_market_data_time: u64,
     proxy_asset: Option<exchange::options::OptionsUnderlying>,
     visible_region: Rectangle,
     chart_scaling: f32,
@@ -3279,7 +3321,8 @@ fn draw_gex_overlay_background(
         freshness,
         render_cache,
         config,
-        latest_candle_time,
+        visible_latest_time,
+        latest_market_data_time,
         visible_region,
         chart_scaling,
         chart_interval_ms,
@@ -3595,6 +3638,7 @@ fn draw_gex_overlay_foreground(
     render_cache: &RefCell<GexRenderCache>,
     config: &data::chart::gex::GexLevelsConfig,
     chart_interval_ms: u64,
+    latest_market_data_time: u64,
     visible_region: Rectangle,
     chart_scaling: f32,
     palette: &Extended,
@@ -3609,6 +3653,7 @@ fn draw_gex_overlay_foreground(
         visible_region,
         chart_scaling,
         chart_interval_ms,
+        latest_market_data_time,
     );
     if config.show_current_profile {
         draw_gex_zone_profile(
@@ -3651,6 +3696,9 @@ fn cached_gex_zone_frames(
     config: &data::chart::gex::GexLevelsConfig,
     render_cache: &RefCell<GexRenderCache>,
 ) -> Arc<[data::chart::gex::GexZoneFrame]> {
+    let quantwheel = history.first().is_some_and(|snapshot| {
+        snapshot.provider == exchange::options::OptionsProvider::QuantWheel
+    });
     let key = history
         .last()
         .map_or(0, |snapshot| snapshot.observed_at.as_u64())
@@ -3658,7 +3706,11 @@ fn cached_gex_zone_frames(
             .last()
             .map_or(0, |snapshot| snapshot.source_spot.to_bits().rotate_left(3))
         ^ (history.len() as u64).rotate_left(7)
-        ^ bucket_ms.rotate_left(17)
+        ^ if quantwheel {
+            0
+        } else {
+            bucket_ms.rotate_left(17)
+        }
         ^ u64::from(config.minimum_zone_strength.to_bits()).rotate_left(49)
         ^ u64::from(config.max_positive_zones).rotate_left(53)
         ^ u64::from(config.max_negative_zones).rotate_left(57)
@@ -3670,11 +3722,72 @@ fn cached_gex_zone_frames(
         ^ config.minimum_absolute_gex.to_bits().rotate_left(47);
     let mut cache = render_cache.borrow_mut();
     if cache.key != Some(key) {
-        cache.zone_frames =
-            data::chart::gex::build_gex_zone_frames(history, bucket_ms, config).into();
+        cache.zone_frames = if quantwheel {
+            data::chart::gex::build_quantwheel_gex_intervals(history, config).into()
+        } else {
+            data::chart::gex::build_gex_zone_frames(history, bucket_ms, config).into()
+        };
         cache.key = Some(key);
     }
     cache.zone_frames.clone()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GexTimeModel {
+    QuantWheelExact { data_watermark: UnixMs },
+    DeribitBuckets,
+}
+
+fn gex_time_model(
+    history: &[Arc<data::chart::gex::GexSnapshot>],
+    latest_market_data_time: UnixMs,
+) -> GexTimeModel {
+    if history
+        .first()
+        .is_some_and(|snapshot| snapshot.provider == exchange::options::OptionsProvider::QuantWheel)
+    {
+        GexTimeModel::QuantWheelExact {
+            data_watermark: latest_market_data_time,
+        }
+    } else {
+        GexTimeModel::DeribitBuckets
+    }
+}
+
+fn gex_zone_frame_at(
+    frames: &[data::chart::gex::GexZoneFrame],
+    timestamp: UnixMs,
+    time_model: GexTimeModel,
+) -> Option<&data::chart::gex::GexZoneFrame> {
+    if let GexTimeModel::QuantWheelExact { data_watermark } = time_model
+        && timestamp > data_watermark
+    {
+        return None;
+    }
+    let index = frames.partition_point(|frame| frame.bucket_start <= timestamp);
+    let frame = index.checked_sub(1).and_then(|index| frames.get(index))?;
+    frame
+        .interval_end
+        .is_none_or(|end| timestamp < end)
+        .then_some(frame)
+}
+
+fn gex_zone_frame_end(frame: &data::chart::gex::GexZoneFrame, time_model: GexTimeModel) -> UnixMs {
+    match time_model {
+        GexTimeModel::QuantWheelExact { data_watermark } => frame
+            .interval_end
+            .unwrap_or(data_watermark)
+            .min(data_watermark)
+            .max(frame.bucket_start),
+        GexTimeModel::DeribitBuckets => frame.interval_end.unwrap_or(frame.bucket_start),
+    }
+}
+
+fn gex_projection_start_time(time_model: GexTimeModel, visible_latest_time: UnixMs) -> UnixMs {
+    match time_model {
+        GexTimeModel::QuantWheelExact { data_watermark } => data_watermark,
+        GexTimeModel::DeribitBuckets => visible_latest_time,
+    }
 }
 
 fn gex_zone_fade(zone: &data::chart::gex::GexZone) -> f32 {
@@ -3798,7 +3911,8 @@ fn draw_gex_zone_background(
     freshness: data::chart::gex::GexFreshness,
     render_cache: &RefCell<GexRenderCache>,
     config: &data::chart::gex::GexLevelsConfig,
-    latest_candle_time: u64,
+    visible_latest_time: u64,
+    latest_market_data_time: u64,
     region: Rectangle,
     scaling: f32,
     bucket_ms: u64,
@@ -3817,14 +3931,14 @@ fn draw_gex_zone_background(
     };
     let plot_right = region.x + region.width - profile_gutter;
     let border_width = gex_screen_width_to_world(1.0, scaling);
+    let time_model = gex_time_model(history, UnixMs::new(latest_market_data_time));
 
     for zone_frame in frames.iter() {
         if !config.show_historical_zones {
             break;
         }
         let x0 = time_to_x(zone_frame.bucket_start.as_u64()).max(region.x);
-        let x1 =
-            time_to_x(zone_frame.bucket_start.saturating_add(bucket_ms).as_u64()).min(plot_right);
+        let x1 = time_to_x(gex_zone_frame_end(zone_frame, time_model).as_u64()).min(plot_right);
         if x1 <= x0 {
             continue;
         }
@@ -3874,7 +3988,10 @@ fn draw_gex_zone_background(
         && freshness == data::chart::gex::GexFreshness::Fresh
         && let Some(last) = frames.last()
         && let Some((projection_start, projection_end)) = gex_projection_bounds(
-            time_to_x(latest_candle_time).max(region.x),
+            time_to_x(
+                gex_projection_start_time(time_model, UnixMs::new(visible_latest_time)).as_u64(),
+            )
+            .max(region.x),
             plot_right,
             region.width,
         )
@@ -3930,15 +4047,17 @@ fn draw_gex_zone_cores(
     region: Rectangle,
     scaling: f32,
     bucket_ms: u64,
+    latest_market_data_time: u64,
 ) {
     let bucket_ms = bucket_ms.max(1);
     let frames = cached_gex_zone_frames(history, bucket_ms, config, render_cache);
+    let time_model = gex_time_model(history, UnixMs::new(latest_market_data_time));
     for (frame_index, zone_frame) in frames.iter().enumerate() {
         if !config.show_historical_zones && frame_index + 1 != frames.len() {
             continue;
         }
         let x0 = time_to_x(zone_frame.bucket_start.as_u64()).max(region.x);
-        let x1 = time_to_x(zone_frame.bucket_start.saturating_add(bucket_ms).as_u64())
+        let x1 = time_to_x(gex_zone_frame_end(zone_frame, time_model).as_u64())
             .min(region.x + region.width);
         if x1 <= x0 {
             continue;
@@ -7239,6 +7358,7 @@ mod tests {
 
         let bands: Arc<[GexZoneBand]> = vec![
             GexZoneBand {
+                source_strike: None,
                 strike: 65_000.0,
                 lower_price: 64_900.0,
                 upper_price: 65_100.0,
@@ -7246,6 +7366,7 @@ mod tests {
                 net_gex_1pct: 3.0,
             },
             GexZoneBand {
+                source_strike: None,
                 strike: 67_000.0,
                 lower_price: 66_900.0,
                 upper_price: 67_100.0,
@@ -7273,6 +7394,7 @@ mod tests {
         };
         let frame = GexZoneFrame {
             bucket_start: UnixMs::new(1),
+            interval_end: Some(UnixMs::new(2)),
             source_spot: 66_000.0,
             zones: vec![zone].into(),
         };
@@ -7546,6 +7668,183 @@ mod tests {
             Some((80.0, 100.0))
         );
         assert_eq!(gex_projection_bounds(100.0, 100.0, 100.0), None);
+    }
+
+    #[test]
+    fn quantwheel_tooltip_frame_lookup_uses_exact_half_open_intervals() {
+        use data::chart::gex::GexZoneFrame;
+        let frames = vec![
+            GexZoneFrame {
+                bucket_start: UnixMs::new(81_677_000),
+                interval_end: Some(UnixMs::new(84_000_000)),
+                source_spot: 29_700.0,
+                zones: Arc::from([]),
+            },
+            GexZoneFrame {
+                bucket_start: UnixMs::new(84_000_000),
+                interval_end: None,
+                source_spot: 29_730.0,
+                zones: Arc::from([]),
+            },
+        ];
+        let time_model = GexTimeModel::QuantWheelExact {
+            data_watermark: UnixMs::new(85_538_000),
+        };
+
+        assert!(gex_zone_frame_at(&frames, UnixMs::new(81_676_999), time_model).is_none());
+        assert_eq!(
+            gex_zone_frame_at(&frames, UnixMs::new(81_677_000), time_model)
+                .map(|frame| frame.source_spot),
+            Some(29_700.0)
+        );
+        assert_eq!(
+            gex_zone_frame_at(&frames, UnixMs::new(83_999_999), time_model)
+                .map(|frame| frame.source_spot),
+            Some(29_700.0)
+        );
+        assert_eq!(
+            gex_zone_frame_at(&frames, UnixMs::new(84_000_000), time_model)
+                .map(|frame| frame.source_spot),
+            Some(29_730.0)
+        );
+        assert_eq!(
+            gex_zone_frame_at(&frames, UnixMs::new(85_537_999), time_model)
+                .map(|frame| frame.source_spot),
+            Some(29_730.0)
+        );
+        assert!(gex_zone_frame_at(&frames, UnixMs::new(85_538_000), time_model).is_some());
+        assert!(gex_zone_frame_at(&frames, UnixMs::new(85_538_001), time_model).is_none());
+        assert!(gex_zone_frame_at(&frames, UnixMs::new(86_000_000), time_model).is_none());
+    }
+
+    #[test]
+    fn quantwheel_open_interval_ends_at_exact_data_watermark_on_every_timeframe() {
+        let frame = data::chart::gex::GexZoneFrame {
+            bucket_start: UnixMs::new(40_903_000), // 11:21:43.000
+            interval_end: None,
+            source_spot: 29_700.0,
+            zones: Arc::from([]),
+        };
+        let data_watermark = UnixMs::new(41_138_000); // 11:25:38.000
+        let time_model = GexTimeModel::QuantWheelExact { data_watermark };
+
+        for _timeframe_ms in [60_000, 300_000, 900_000] {
+            assert_eq!(gex_zone_frame_end(&frame, time_model), data_watermark);
+        }
+        assert_ne!(
+            gex_zone_frame_end(&frame, time_model),
+            UnixMs::new(41_400_000) // 11:30:00.000
+        );
+    }
+
+    #[test]
+    fn quantwheel_historical_endpoint_is_viewport_invariant() {
+        let frame = data::chart::gex::GexZoneFrame {
+            bucket_start: UnixMs::new(40_903_000),
+            interval_end: None,
+            source_spot: 29_700.0,
+            zones: Arc::from([]),
+        };
+        let time_model = GexTimeModel::QuantWheelExact {
+            data_watermark: UnixMs::new(41_138_000),
+        };
+
+        let endpoint_before_zoom = gex_zone_frame_end(&frame, time_model);
+        let projection_before_zoom = gex_projection_bounds(80.0, 140.0, 100.0);
+        let endpoint_after_zoom = gex_zone_frame_end(&frame, time_model);
+        let projection_after_zoom = gex_projection_bounds(40.0, 220.0, 300.0);
+
+        assert_eq!(endpoint_before_zoom, UnixMs::new(41_138_000));
+        assert_eq!(endpoint_after_zoom, endpoint_before_zoom);
+        assert_ne!(projection_before_zoom, projection_after_zoom);
+    }
+
+    #[test]
+    fn quantwheel_watermark_caps_closed_interval_when_observation_is_ahead_of_market_data() {
+        let frame = data::chart::gex::GexZoneFrame {
+            bucket_start: UnixMs::new(81_703_000),
+            interval_end: Some(UnixMs::new(86_808_500)),
+            source_spot: 29_700.0,
+            zones: Arc::from([]),
+        };
+        let time_model = GexTimeModel::QuantWheelExact {
+            data_watermark: UnixMs::new(85_538_000),
+        };
+
+        assert_eq!(
+            gex_zone_frame_end(&frame, time_model),
+            UnixMs::new(85_538_000)
+        );
+    }
+
+    #[test]
+    fn quantwheel_market_data_progression_does_not_change_gex_history_at_new_candle() {
+        let mut chart = empty_candlestick_chart(&[], None);
+        let min_tick = chart.chart.ticker_info.min_ticksize;
+        let history_before = chart.gex_history.clone();
+        let snapshot_before = chart.gex_snapshot.clone();
+
+        for (candle_open, received_at) in [
+            (40_800_000, 41_099_000),
+            (41_100_000, 41_100_000),
+            (41_100_000, 41_101_000),
+            (41_100_000, 41_138_000),
+        ] {
+            let kline = Kline::new(
+                candle_open,
+                100.0,
+                101.0,
+                99.0,
+                100.5,
+                exchange::Volume::TotalOnly(Qty::from_f64(1.0)),
+                min_tick,
+            );
+            chart.update_latest_kline(&kline, UnixMs::new(received_at));
+            assert_eq!(chart.latest_market_data_time, UnixMs::new(received_at));
+            assert_eq!(chart.gex_history, history_before);
+            assert_eq!(chart.gex_snapshot, snapshot_before);
+        }
+    }
+
+    #[test]
+    fn quantwheel_projection_and_history_share_watermark_while_deribit_keeps_visible_anchor() {
+        let watermark = UnixMs::new(85_538_000);
+        let visible_latest = UnixMs::new(90_000_000);
+        let quantwheel = GexTimeModel::QuantWheelExact {
+            data_watermark: watermark,
+        };
+
+        assert_eq!(
+            gex_projection_start_time(quantwheel, visible_latest),
+            watermark
+        );
+        assert_eq!(
+            gex_projection_start_time(GexTimeModel::DeribitBuckets, visible_latest),
+            visible_latest
+        );
+    }
+
+    #[test]
+    fn deribit_frame_lookup_and_bucket_end_remain_half_open() {
+        let frames = [data::chart::gex::GexZoneFrame {
+            bucket_start: UnixMs::new(300_000),
+            interval_end: Some(UnixMs::new(600_000)),
+            source_spot: 70_000.0,
+            zones: Arc::from([]),
+        }];
+
+        assert!(
+            gex_zone_frame_at(&frames, UnixMs::new(599_999), GexTimeModel::DeribitBuckets)
+                .is_some()
+        );
+        assert!(
+            gex_zone_frame_at(&frames, UnixMs::new(600_000), GexTimeModel::DeribitBuckets)
+                .is_none()
+        );
+        assert_eq!(
+            gex_zone_frame_end(&frames[0], GexTimeModel::DeribitBuckets),
+            UnixMs::new(600_000)
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@ use data::chart::gex::{
     calculate_gex_at, map_proxy_snapshot, quantwheel_snapshot,
 };
 use exchange::{
-    UnixMs,
+    Ticker, UnixMs,
     options::{
         GexSource, OptionContractMatchKey, OptionInstrument, OptionsProvider, OptionsUnderlying,
         RawOptionChainSnapshot,
@@ -39,6 +39,7 @@ pub struct QuantWheelFetchCompletion {
     pub underlying: OptionsUnderlying,
     pub expiry_filter: GexExpiryFilter,
     pub expiration_count: usize,
+    pub resolved_expirations: Arc<[String]>,
     pub result: Result<QuantWheelGexSnapshot, Arc<str>>,
     pub quota: Option<QuantWheelQuota>,
     pub rate_limited: bool,
@@ -181,9 +182,33 @@ struct CachedGexSnapshot {
 
 #[derive(Debug, Clone)]
 struct CachedQuantWheelSnapshot {
-    source: Arc<GexSnapshot>,
-    mapped: Option<Arc<GexSnapshot>>,
+    mapped: FxHashMap<Ticker, Arc<GexSnapshot>>,
     received_at: UnixMs,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct QuantWheelSeriesKey {
+    underlying: OptionsUnderlying,
+    expiry_filter: GexExpiryFilter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct QuantWheelMappedSeriesKey {
+    source: QuantWheelSeriesKey,
+    target: Ticker,
+}
+
+#[derive(Debug, Clone)]
+struct HistoricalQuantWheelSource {
+    revision: u64,
+    value: Arc<GexSnapshot>,
+    resolved_expirations: Arc<[String]>,
+}
+
+#[derive(Debug, Clone)]
+struct HistoricalQuantWheelMapping {
+    source_revision: u64,
+    value: Arc<GexSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -236,8 +261,10 @@ pub struct GexDataCoordinator {
     last_freshness: FxHashMap<OptionsChainKey, GexFreshness>,
     quantwheel_subscribers: FxHashMap<OptionsUnderlying, usize>,
     quantwheel_expiry_filters: FxHashMap<OptionsUnderlying, GexExpiryFilter>,
-    quantwheel_snapshots: FxHashMap<OptionsUnderlying, CachedQuantWheelSnapshot>,
-    quantwheel_mapped_history: FxHashMap<OptionsUnderlying, VecDeque<Arc<GexSnapshot>>>,
+    quantwheel_snapshots: FxHashMap<QuantWheelSeriesKey, CachedQuantWheelSnapshot>,
+    quantwheel_source_history: FxHashMap<QuantWheelSeriesKey, VecDeque<HistoricalQuantWheelSource>>,
+    quantwheel_mapped_history:
+        FxHashMap<QuantWheelMappedSeriesKey, VecDeque<HistoricalQuantWheelMapping>>,
     quantwheel_in_flight: FxHashSet<OptionsUnderlying>,
     quantwheel_failures: FxHashMap<OptionsUnderlying, FailureState>,
     quantwheel_force_refresh: FxHashSet<OptionsUnderlying>,
@@ -290,6 +317,7 @@ impl GexDataCoordinator {
             quantwheel_subscribers: FxHashMap::default(),
             quantwheel_expiry_filters: FxHashMap::default(),
             quantwheel_snapshots: FxHashMap::default(),
+            quantwheel_source_history: FxHashMap::default(),
             quantwheel_mapped_history: FxHashMap::default(),
             quantwheel_in_flight: FxHashSet::default(),
             quantwheel_failures: FxHashMap::default(),
@@ -465,7 +493,10 @@ impl GexDataCoordinator {
             }
             let expired = self
                 .quantwheel_snapshots
-                .get(&underlying)
+                .get(&QuantWheelSeriesKey {
+                    underlying,
+                    expiry_filter: self.quantwheel_expiry_filter(underlying),
+                })
                 .is_none_or(|cached| {
                     now.saturating_diff(cached.received_at) >= QUANTWHEEL_REFRESH_MS
                 });
@@ -496,7 +527,16 @@ impl GexDataCoordinator {
         result: Result<QuantWheelGexSnapshot, Arc<str>>,
         now: UnixMs,
     ) {
-        self.complete_quantwheel_with_metadata(underlying, result, 1, None, false, now);
+        self.complete_quantwheel_with_metadata(
+            underlying,
+            self.quantwheel_expiry_filter(underlying),
+            result,
+            1,
+            Arc::from([]),
+            None,
+            false,
+            now,
+        );
     }
 
     pub fn complete_quantwheel_fetch(
@@ -520,8 +560,10 @@ impl GexDataCoordinator {
         }
         self.complete_quantwheel_with_metadata(
             underlying,
+            completion.expiry_filter,
             completion.result,
             completion.expiration_count,
+            completion.resolved_expirations,
             completion.quota,
             completion.rate_limited,
             now,
@@ -531,8 +573,10 @@ impl GexDataCoordinator {
     fn complete_quantwheel_with_metadata(
         &mut self,
         underlying: OptionsUnderlying,
+        expiry_filter: GexExpiryFilter,
         result: Result<QuantWheelGexSnapshot, Arc<str>>,
         expiration_count: usize,
+        resolved_expirations: Arc<[String]>,
         quota: Option<QuantWheelQuota>,
         rate_limited: bool,
         now: UnixMs,
@@ -547,8 +591,10 @@ impl GexDataCoordinator {
                 if source.underlying != underlying {
                     self.complete_quantwheel_with_metadata(
                         underlying,
+                        expiry_filter,
                         Err(Arc::from("QuantWheel returned a different underlying")),
                         expiration_count,
+                        resolved_expirations,
                         None,
                         false,
                         now,
@@ -557,26 +603,46 @@ impl GexDataCoordinator {
                 }
                 let source = Arc::new(quantwheel_snapshot(
                     source,
-                    self.quantwheel_expiry_filter(underlying),
+                    expiry_filter,
                     expiration_count,
                     now,
                 ));
                 let cutoff = now.saturating_sub(24 * 60 * 60 * 1_000);
-                let history = self
-                    .quantwheel_mapped_history
-                    .entry(underlying)
+                let series_key = QuantWheelSeriesKey {
+                    underlying,
+                    expiry_filter,
+                };
+                let revision = self.next_revision;
+                self.next_revision = self.next_revision.saturating_add(1);
+                let source_history = self
+                    .quantwheel_source_history
+                    .entry(series_key)
                     .or_default();
-                while history
+                source_history.push_back(HistoricalQuantWheelSource {
+                    revision,
+                    value: source.clone(),
+                    resolved_expirations: resolved_expirations.clone(),
+                });
+                while source_history
                     .front()
-                    .is_some_and(|snapshot| snapshot.observed_at < cutoff)
+                    .is_some_and(|observation| observation.value.observed_at < cutoff)
                 {
-                    history.pop_front();
+                    source_history.pop_front();
+                }
+                for (key, history) in &mut self.quantwheel_mapped_history {
+                    if key.source.underlying == underlying {
+                        while history
+                            .front()
+                            .is_some_and(|mapping| mapping.value.observed_at < cutoff)
+                        {
+                            history.pop_front();
+                        }
+                    }
                 }
                 self.quantwheel_snapshots.insert(
-                    underlying,
+                    series_key,
                     CachedQuantWheelSnapshot {
-                        source,
-                        mapped: None,
+                        mapped: FxHashMap::default(),
                         received_at: now,
                     },
                 );
@@ -618,54 +684,93 @@ impl GexDataCoordinator {
     pub fn mapped_quantwheel(
         &mut self,
         underlying: OptionsUnderlying,
-        target_symbol: &str,
+        expiry_filter: GexExpiryFilter,
+        target: Ticker,
         target_spot_anchor: f64,
     ) -> Option<Arc<GexSnapshot>> {
-        let cached = self.quantwheel_snapshots.get_mut(&underlying)?;
-        // A target price is consumed only once for each accepted source snapshot.
-        // All later market ticks reuse these mapped coordinates until QuantWheel
-        // supplies a new snapshot and replaces this cache entry.
-        if cached.mapped.is_none() {
-            let mapped = Arc::new(map_proxy_snapshot(
-                &cached.source,
+        let source_key = QuantWheelSeriesKey {
+            underlying,
+            expiry_filter,
+        };
+        let cached = self.quantwheel_snapshots.get_mut(&source_key)?;
+        // Each target market consumes its anchor once for each accepted source
+        // observation. Later ticks for that exact Ticker reuse immutable mapped
+        // coordinates until QuantWheel supplies the next observation.
+        let history_key = QuantWheelMappedSeriesKey {
+            source: source_key,
+            target,
+        };
+        let mapped_history = self
+            .quantwheel_mapped_history
+            .entry(history_key)
+            .or_default();
+        let last_revision = mapped_history
+            .back()
+            .map_or(0, |mapping| mapping.source_revision);
+        let target_symbol = target.display_symbol_and_type().0;
+        for observation in self
+            .quantwheel_source_history
+            .get(&source_key)
+            .into_iter()
+            .flatten()
+            .filter(|observation| observation.revision > last_revision)
+        {
+            let mut mapped = map_proxy_snapshot(
+                &observation.value,
                 underlying.as_str(),
-                target_symbol,
+                &target_symbol,
                 target_spot_anchor,
-            )?);
-            self.quantwheel_mapped_history
-                .entry(underlying)
-                .or_default()
-                .push_back(mapped.clone());
-            cached.mapped = Some(mapped);
+            )?;
+            if let Some(proxy) = &mut mapped.proxy {
+                proxy.resolved_expirations = observation.resolved_expirations.clone();
+            }
+            let mapped = Arc::new(mapped);
+            mapped_history.push_back(HistoricalQuantWheelMapping {
+                source_revision: observation.revision,
+                value: mapped.clone(),
+            });
+            cached.mapped.insert(target, mapped);
         }
-        cached.mapped.clone()
+        cached.mapped.get(&target).cloned()
     }
 
     pub fn mapped_quantwheel_history(
         &self,
         underlying: OptionsUnderlying,
+        expiry_filter: GexExpiryFilter,
+        target: Ticker,
         retention_minutes: u16,
         now: UnixMs,
     ) -> Vec<Arc<GexSnapshot>> {
         let cutoff = now
             .saturating_sub(u64::from(retention_minutes.clamp(30, 24 * 60)).saturating_mul(60_000));
         self.quantwheel_mapped_history
-            .get(&underlying)
+            .get(&QuantWheelMappedSeriesKey {
+                source: QuantWheelSeriesKey {
+                    underlying,
+                    expiry_filter,
+                },
+                target,
+            })
             .into_iter()
             .flatten()
-            .filter(|snapshot| snapshot.observed_at >= cutoff)
-            .cloned()
+            .filter(|mapping| mapping.value.observed_at >= cutoff)
+            .map(|mapping| mapping.value.clone())
             .collect()
     }
 
     pub fn quantwheel_freshness(&self, underlying: OptionsUnderlying, now: UnixMs) -> GexFreshness {
+        let key = QuantWheelSeriesKey {
+            underlying,
+            expiry_filter: self.quantwheel_expiry_filter(underlying),
+        };
         if self.quantwheel_failures.contains_key(&underlying) {
             GexFreshness::Error
         } else if self.quantwheel_in_flight.contains(&underlying)
-            && !self.quantwheel_snapshots.contains_key(&underlying)
+            && !self.quantwheel_snapshots.contains_key(&key)
         {
             GexFreshness::Loading
-        } else if let Some(cached) = self.quantwheel_snapshots.get(&underlying) {
+        } else if let Some(cached) = self.quantwheel_snapshots.get(&key) {
             if now.saturating_diff(cached.received_at) <= QUANTWHEEL_REFRESH_MS {
                 GexFreshness::Fresh
             } else {
@@ -1683,6 +1788,12 @@ pub async fn execute_quantwheel_fetch(
             underlying,
             expiry_filter,
             expiration_count: response.expirations.len(),
+            resolved_expirations: response
+                .expirations
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .into(),
             result: Ok(response.snapshot),
             quota: Some(response.quota),
             rate_limited: false,
@@ -1691,6 +1802,7 @@ pub async fn execute_quantwheel_fetch(
             underlying,
             expiry_filter,
             expiration_count: 0,
+            resolved_expirations: Arc::from([]),
             quota: error.quota(),
             rate_limited: error.is_rate_limited(),
             result: Err(Arc::from(error.to_string())),
@@ -1732,6 +1844,7 @@ fn error_text(error: DeribitError) -> Arc<str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use exchange::adapter::Exchange;
     use exchange::options::{
         OptionInstrument, OptionMarketPoint, OptionRight, RawOptionContractSnapshot,
     };
@@ -1833,6 +1946,24 @@ mod tests {
         quantwheel_source_at(now, 400.0)
     }
 
+    fn xaut_ticker() -> Ticker {
+        Ticker::new("XAUTUSDT", Exchange::MexcLinear)
+    }
+
+    fn nq_ticker() -> Ticker {
+        Ticker::new("NQZ26", Exchange::BybitLinear)
+    }
+
+    fn nas100_ticker() -> Ticker {
+        Ticker::new("NAS100_USDT", Exchange::MexcLinear)
+    }
+
+    fn ndx_source_at(now: UnixMs, stock_price: f64) -> QuantWheelGexSnapshot {
+        let mut source = quantwheel_source_at(now, stock_price);
+        source.underlying = OptionsUnderlying::Ndx;
+        source
+    }
+
     fn quantwheel_source_at(now: UnixMs, stock_price: f64) -> QuantWheelGexSnapshot {
         QuantWheelGexSnapshot {
             provider: OptionsProvider::QuantWheel,
@@ -1870,10 +2001,20 @@ mod tests {
         value.complete_quantwheel(OptionsUnderlying::Gld, Ok(quantwheel_source(now)), now);
 
         let first = value
-            .mapped_quantwheel(OptionsUnderlying::Gld, "XAUTUSDT", 4_000.0)
+            .mapped_quantwheel(
+                OptionsUnderlying::Gld,
+                GexExpiryFilter::SevenDays,
+                xaut_ticker(),
+                4_000.0,
+            )
             .expect("mapped snapshot");
         let moved = value
-            .mapped_quantwheel(OptionsUnderlying::Gld, "XAUTUSDT", 4_100.0)
+            .mapped_quantwheel(
+                OptionsUnderlying::Gld,
+                GexExpiryFilter::SevenDays,
+                xaut_ticker(),
+                4_100.0,
+            )
             .expect("cached mapped snapshot");
         assert_eq!(first.strikes[0].strike, 4_050.0);
         assert_eq!(moved.strikes[0].strike, 4_050.0);
@@ -1908,12 +2049,22 @@ mod tests {
         value.complete_quantwheel(OptionsUnderlying::Ndx, Ok(ndx), now);
         assert!(
             value
-                .mapped_quantwheel(OptionsUnderlying::Ndx, "NQZ26", 21_000.0)
+                .mapped_quantwheel(
+                    OptionsUnderlying::Ndx,
+                    GexExpiryFilter::SevenDays,
+                    nq_ticker(),
+                    21_000.0
+                )
                 .is_some()
         );
         assert!(
             value
-                .mapped_quantwheel(OptionsUnderlying::Gld, "XAUTUSDT", 4_000.0)
+                .mapped_quantwheel(
+                    OptionsUnderlying::Gld,
+                    GexExpiryFilter::SevenDays,
+                    xaut_ticker(),
+                    4_000.0
+                )
                 .is_none()
         );
     }
@@ -1930,7 +2081,12 @@ mod tests {
             t1,
         );
         let first = value
-            .mapped_quantwheel(OptionsUnderlying::Gld, "XAUTUSDT", 4_000.0)
+            .mapped_quantwheel(
+                OptionsUnderlying::Gld,
+                GexExpiryFilter::SevenDays,
+                xaut_ticker(),
+                4_000.0,
+            )
             .expect("first mapping");
 
         value.complete_quantwheel(
@@ -1939,7 +2095,12 @@ mod tests {
             t2,
         );
         let second = value
-            .mapped_quantwheel(OptionsUnderlying::Gld, "XAUTUSDT", 4_100.0)
+            .mapped_quantwheel(
+                OptionsUnderlying::Gld,
+                GexExpiryFilter::SevenDays,
+                xaut_ticker(),
+                4_100.0,
+            )
             .expect("second mapping");
 
         assert_eq!(first.strikes[0].strike, 4_050.0);
@@ -1960,10 +2121,20 @@ mod tests {
             t1,
         );
         value
-            .mapped_quantwheel(OptionsUnderlying::Gld, "XAUTUSDT", 4_000.0)
+            .mapped_quantwheel(
+                OptionsUnderlying::Gld,
+                GexExpiryFilter::SevenDays,
+                xaut_ticker(),
+                4_000.0,
+            )
             .expect("first mapping");
         value
-            .mapped_quantwheel(OptionsUnderlying::Gld, "XAUTUSDT", 4_100.0)
+            .mapped_quantwheel(
+                OptionsUnderlying::Gld,
+                GexExpiryFilter::SevenDays,
+                xaut_ticker(),
+                4_100.0,
+            )
             .expect("same mapping after realtime move");
 
         value.complete_quantwheel(
@@ -1972,14 +2143,158 @@ mod tests {
             t2,
         );
         value
-            .mapped_quantwheel(OptionsUnderlying::Gld, "XAUTUSDT", 4_100.0)
+            .mapped_quantwheel(
+                OptionsUnderlying::Gld,
+                GexExpiryFilter::SevenDays,
+                xaut_ticker(),
+                4_100.0,
+            )
             .expect("second mapping");
-        let history = value.mapped_quantwheel_history(OptionsUnderlying::Gld, 24 * 60, t2);
+        let history = value.mapped_quantwheel_history(
+            OptionsUnderlying::Gld,
+            GexExpiryFilter::SevenDays,
+            xaut_ticker(),
+            24 * 60,
+            t2,
+        );
 
         assert_eq!(history.len(), 2);
         assert_eq!(history[0].strikes[0].strike, 4_050.0);
         assert_eq!(history[0].proxy.as_ref().unwrap().target_spot, 4_000.0);
         assert!((history[1].strikes[0].strike - (405.0 * 4_100.0 / 401.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn quantwheel_target_mapping_is_ticker_specific_and_consumer_order_independent() {
+        fn map_in_order(targets: [(Ticker, f64); 2]) -> (f64, f64) {
+            let now = UnixMs::new(1_800_000_000_000);
+            let mut value = coordinator();
+            value.set_consumers([GexSource::nq_ndx()]);
+            value.complete_quantwheel(
+                OptionsUnderlying::Ndx,
+                Ok(ndx_source_at(now, 30_000.0)),
+                now,
+            );
+            for (ticker, anchor) in targets {
+                value
+                    .mapped_quantwheel(
+                        OptionsUnderlying::Ndx,
+                        GexExpiryFilter::SevenDays,
+                        ticker,
+                        anchor,
+                    )
+                    .expect("target mapping");
+            }
+            let nas100 = value.mapped_quantwheel_history(
+                OptionsUnderlying::Ndx,
+                GexExpiryFilter::SevenDays,
+                nas100_ticker(),
+                24 * 60,
+                now,
+            )[0]
+            .strikes[0]
+                .strike;
+            let nq = value.mapped_quantwheel_history(
+                OptionsUnderlying::Ndx,
+                GexExpiryFilter::SevenDays,
+                nq_ticker(),
+                24 * 60,
+                now,
+            )[0]
+            .strikes[0]
+                .strike;
+            (nas100, nq)
+        }
+
+        let nas_first = map_in_order([(nas100_ticker(), 29_700.0), (nq_ticker(), 30_150.0)]);
+        let nq_first = map_in_order([(nq_ticker(), 30_150.0), (nas100_ticker(), 29_700.0)]);
+        assert_eq!(nas_first, nq_first);
+        assert_ne!(nas_first.0, nas_first.1);
+        assert!((nas_first.0 - 400.95).abs() < 1.0e-9);
+        assert!((nas_first.1 - 407.025).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn quantwheel_expiry_histories_are_isolated() {
+        let t1 = UnixMs::new(1_800_000_000_000);
+        let t2 = t1.saturating_add(QUANTWHEEL_REFRESH_MS);
+        let mut value = coordinator();
+        value.set_consumers([(GexSource::nq_ndx(), GexExpiryFilter::SevenDays)]);
+        value.complete_quantwheel(OptionsUnderlying::Ndx, Ok(ndx_source_at(t1, 30_000.0)), t1);
+        value
+            .mapped_quantwheel(
+                OptionsUnderlying::Ndx,
+                GexExpiryFilter::SevenDays,
+                nas100_ticker(),
+                29_700.0,
+            )
+            .unwrap();
+
+        value.set_consumers([(GexSource::nq_ndx(), GexExpiryFilter::ThirtyDays)]);
+        value.complete_quantwheel(OptionsUnderlying::Ndx, Ok(ndx_source_at(t2, 30_100.0)), t2);
+        value
+            .mapped_quantwheel(
+                OptionsUnderlying::Ndx,
+                GexExpiryFilter::ThirtyDays,
+                nas100_ticker(),
+                29_800.0,
+            )
+            .unwrap();
+
+        let seven = value.mapped_quantwheel_history(
+            OptionsUnderlying::Ndx,
+            GexExpiryFilter::SevenDays,
+            nas100_ticker(),
+            24 * 60,
+            t2,
+        );
+        let thirty = value.mapped_quantwheel_history(
+            OptionsUnderlying::Ndx,
+            GexExpiryFilter::ThirtyDays,
+            nas100_ticker(),
+            24 * 60,
+            t2,
+        );
+        assert_eq!(seven.len(), 1);
+        assert_eq!(thirty.len(), 1);
+        assert_eq!(seven[0].expiry_filter, GexExpiryFilter::SevenDays);
+        assert_eq!(thirty[0].expiry_filter, GexExpiryFilter::ThirtyDays);
+    }
+
+    #[test]
+    fn identical_quantwheel_payloads_at_distinct_times_remain_observations() {
+        let t1 = UnixMs::new(1_800_000_000_000);
+        let mut value = coordinator();
+        value.set_consumers([GexSource::nq_ndx()]);
+        for offset in [0, QUANTWHEEL_REFRESH_MS, 2 * QUANTWHEEL_REFRESH_MS] {
+            let observed_at = t1.saturating_add(offset);
+            value.complete_quantwheel(
+                OptionsUnderlying::Ndx,
+                Ok(ndx_source_at(observed_at, 30_000.0)),
+                observed_at,
+            );
+        }
+        value
+            .mapped_quantwheel(
+                OptionsUnderlying::Ndx,
+                GexExpiryFilter::SevenDays,
+                nas100_ticker(),
+                29_700.0,
+            )
+            .unwrap();
+        let history = value.mapped_quantwheel_history(
+            OptionsUnderlying::Ndx,
+            GexExpiryFilter::SevenDays,
+            nas100_ticker(),
+            24 * 60,
+            t1.saturating_add(2 * QUANTWHEEL_REFRESH_MS),
+        );
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].observed_at, t1);
+        assert_eq!(
+            history[2].observed_at,
+            t1.saturating_add(2 * QUANTWHEEL_REFRESH_MS)
+        );
     }
 
     #[test]
@@ -2001,7 +2316,12 @@ mod tests {
         );
         assert!(
             value
-                .mapped_quantwheel(OptionsUnderlying::Gld, "XAUTUSDT", 4_000.0)
+                .mapped_quantwheel(
+                    OptionsUnderlying::Gld,
+                    GexExpiryFilter::SevenDays,
+                    xaut_ticker(),
+                    4_000.0
+                )
                 .is_some()
         );
         assert_eq!(
@@ -2025,6 +2345,7 @@ mod tests {
                 underlying: OptionsUnderlying::Gld,
                 expiry_filter: GexExpiryFilter::SevenDays,
                 expiration_count: 0,
+                resolved_expirations: Arc::from([]),
                 result: Err("daily limit reached".into()),
                 quota: Some(QuantWheelQuota {
                     limit: 5,
