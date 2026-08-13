@@ -3807,6 +3807,34 @@ fn gex_band_effective_strength(
         * gex_zone_fade(zone)
 }
 
+fn gex_band_visual_weight(
+    zone: &data::chart::gex::GexZone,
+    band: &data::chart::gex::GexZoneBand,
+) -> f32 {
+    band.normalized_strength.clamp(0.0, 1.0).powf(1.6)
+        * (0.65 + 0.35 * zone.persistence_score.clamp(0.0, 1.0))
+}
+
+/// Smoothly reduces member detail when adjacent bands project too close together.
+/// The ramp avoids a hard zoom threshold while leaving the zone and peak visible.
+fn gex_member_detail_factor(projected_spacing_px: f32) -> f32 {
+    ((projected_spacing_px - 2.5) / 2.5).clamp(0.0, 1.0)
+}
+
+fn gex_zone_member_detail(
+    zone: &data::chart::gex::GexZone,
+    price_to_y: impl Fn(Price) -> f32,
+    scaling: f32,
+) -> f32 {
+    if zone.bands.len() < 2 {
+        return 1.0;
+    }
+    let top = price_to_y(Price::from_f64(zone.upper_price));
+    let bottom = price_to_y(Price::from_f64(zone.lower_price));
+    let average_spacing_px = (bottom - top).abs() * scaling / (zone.bands.len() - 1) as f32;
+    gex_member_detail_factor(average_spacing_px)
+}
+
 fn gex_zone_band_hit_test(
     frame: &data::chart::gex::GexZoneFrame,
     price: f64,
@@ -3948,6 +3976,21 @@ fn draw_gex_zone_background(
             .filter(|zone| zone.upper_price >= visible_low && zone.lower_price <= visible_high)
         {
             let color = zone_color(zone, config, palette);
+            let fade = gex_zone_fade(zone);
+            let detail = gex_zone_member_detail(zone, price_to_y, scaling);
+            let zone_top = price_to_y(Price::from_f64(zone.upper_price)).max(region.y);
+            let zone_bottom =
+                price_to_y(Price::from_f64(zone.lower_price)).min(region.y + region.height);
+            if zone_bottom > zone_top {
+                let zone_strength = zone.normalized_strength.clamp(0.0, 1.0).powf(1.4);
+                frame.fill(
+                    &Path::rectangle(
+                        Point::new(x0, zone_top),
+                        Size::new(x1 - x0, zone_bottom - zone_top),
+                    ),
+                    color.scale_alpha(fade * (0.015 + 0.045 * zone_strength)),
+                );
+            }
             for band in zone
                 .bands
                 .iter()
@@ -3959,26 +4002,35 @@ fn draw_gex_zone_background(
                 if bottom <= top {
                     continue;
                 }
-                let effective_strength = gex_band_effective_strength(zone, band);
-                let body_alpha = 0.02 + 0.23 * effective_strength;
+                let weight = gex_band_visual_weight(zone, band);
+                let is_peak = band.strike == zone.peak_price;
+                let member_detail = if is_peak { 1.0 } else { detail };
+                let body_alpha = fade
+                    * member_detail
+                    * if is_peak {
+                        0.035 + 0.12 * weight
+                    } else {
+                        0.005 + 0.065 * weight
+                    };
                 frame.fill(
                     &Path::rectangle(Point::new(x0, top), Size::new(x1 - x0, bottom - top)),
                     color.scale_alpha(body_alpha),
                 );
-                let is_peak = band.strike == zone.peak_price;
                 let center_y = price_to_y(Price::from_f64(band.strike));
+                let line_alpha = fade
+                    * member_detail
+                    * if is_peak {
+                        0.22 + 0.38 * weight
+                    } else {
+                        0.025 + 0.24 * weight
+                    };
                 frame.stroke(
                     &Path::line(Point::new(x0, center_y), Point::new(x1, center_y)),
                     Stroke::default()
-                        .with_color(
-                            color.scale_alpha(
-                                (0.16
-                                    + 0.54 * effective_strength
-                                    + if is_peak { 0.18 } else { 0.0 })
-                                .clamp(0.0, 1.0),
-                            ),
-                        )
-                        .with_width(border_width * if is_peak { 1.6 } else { 0.85 }),
+                        .with_color(color.scale_alpha(line_alpha.clamp(0.0, 1.0)))
+                        .with_width(
+                            border_width * if is_peak { 1.45 } else { 0.55 + 0.30 * weight },
+                        ),
                 );
             }
         }
@@ -3998,6 +4050,21 @@ fn draw_gex_zone_background(
     {
         for zone in last.zones.iter() {
             let color = zone_color(zone, config, palette);
+            let fade = gex_zone_fade(zone);
+            let detail = gex_zone_member_detail(zone, price_to_y, scaling);
+            let zone_top = price_to_y(Price::from_f64(zone.upper_price)).max(region.y);
+            let zone_bottom =
+                price_to_y(Price::from_f64(zone.lower_price)).min(region.y + region.height);
+            if zone_bottom > zone_top {
+                let zone_strength = zone.normalized_strength.clamp(0.0, 1.0).powf(1.4);
+                frame.fill(
+                    &Path::rectangle(
+                        Point::new(projection_start, zone_top),
+                        Size::new(projection_end - projection_start, zone_bottom - zone_top),
+                    ),
+                    color.scale_alpha(fade * (0.015 + 0.045 * zone_strength)),
+                );
+            }
             for band in zone.bands.iter() {
                 let top = price_to_y(Price::from_f64(band.upper_price)).max(region.y);
                 let bottom =
@@ -4005,31 +4072,41 @@ fn draw_gex_zone_background(
                 if bottom <= top {
                     continue;
                 }
-                let effective_strength = gex_band_effective_strength(zone, band);
+                let weight = gex_band_visual_weight(zone, band);
+                let is_peak = band.strike == zone.peak_price;
+                let member_detail = if is_peak { 1.0 } else { detail };
                 frame.fill(
                     &Path::rectangle(
                         Point::new(projection_start, top),
                         Size::new(projection_end - projection_start, bottom - top),
                     ),
-                    color.scale_alpha(0.02 + 0.23 * effective_strength),
+                    color.scale_alpha(
+                        fade * member_detail
+                            * if is_peak {
+                                0.035 + 0.12 * weight
+                            } else {
+                                0.005 + 0.065 * weight
+                            },
+                    ),
                 );
-                let is_peak = band.strike == zone.peak_price;
                 let y = price_to_y(Price::from_f64(band.strike));
+                let line_alpha = fade
+                    * member_detail
+                    * if is_peak {
+                        0.22 + 0.38 * weight
+                    } else {
+                        0.025 + 0.24 * weight
+                    };
                 frame.stroke(
                     &Path::line(
                         Point::new(projection_start, y),
                         Point::new(projection_end, y),
                     ),
                     Stroke::default()
-                        .with_color(
-                            color.scale_alpha(
-                                (0.16
-                                    + 0.54 * effective_strength
-                                    + if is_peak { 0.18 } else { 0.0 })
-                                .clamp(0.0, 1.0),
-                            ),
-                        )
-                        .with_width(border_width * if is_peak { 1.6 } else { 0.85 }),
+                        .with_color(color.scale_alpha(line_alpha.clamp(0.0, 1.0)))
+                        .with_width(
+                            border_width * if is_peak { 1.45 } else { 0.55 + 0.30 * weight },
+                        ),
                 );
             }
         }
@@ -4067,27 +4144,34 @@ fn draw_gex_zone_cores(
                 data::chart::gex::GexZoneSign::Positive => Color::from_rgb8(0x16, 0xd8, 0xc5),
                 data::chart::gex::GexZoneSign::Negative => Color::from_rgb8(0xff, 0x31, 0x5d),
             };
+            let fade = gex_zone_fade(zone);
+            let detail = gex_zone_member_detail(zone, price_to_y, scaling);
             for band in zone.bands.iter() {
                 let y = price_to_y(Price::from_f64(band.strike));
                 if y < region.y || y > region.y + region.height {
                     continue;
                 }
-                let effective_strength = gex_band_effective_strength(zone, band);
                 let is_peak = band.strike == zone.peak_price;
+                let weight = gex_band_visual_weight(zone, band);
+                let member_detail = if is_peak { 1.0 } else { detail };
                 let height = gex_screen_width_to_world(
                     if is_peak {
-                        2.0 + 2.0 * band.normalized_strength.clamp(0.0, 1.0)
+                        2.2 + 1.8 * weight
                     } else {
-                        0.8 + 1.2 * band.normalized_strength.clamp(0.0, 1.0)
+                        0.55 + 0.55 * weight
                     },
                     scaling,
                 );
+                let alpha = fade
+                    * member_detail
+                    * if is_peak {
+                        0.48 + 0.42 * weight
+                    } else {
+                        0.04 + 0.20 * weight
+                    };
                 frame.fill(
                     &Path::rectangle(Point::new(x0, y - height * 0.5), Size::new(x1 - x0, height)),
-                    color.scale_alpha(
-                        (0.20 + 0.65 * effective_strength + if is_peak { 0.10 } else { 0.0 })
-                            .clamp(0.0, 1.0),
-                    ),
+                    color.scale_alpha(alpha.clamp(0.0, 1.0)),
                 );
             }
         }
@@ -7402,6 +7486,69 @@ mod tests {
         let (_, band) = gex_zone_band_hit_test(&frame, 65_000.0).expect("65k band hit");
         assert_eq!(band.strike, 65_000.0);
         assert!(gex_zone_band_hit_test(&frame, 66_000.0).is_none());
+    }
+
+    #[test]
+    fn gex_member_detail_lod_is_smooth_and_deterministic() {
+        assert_eq!(gex_member_detail_factor(2.0), 0.0);
+        assert_eq!(gex_member_detail_factor(2.5), 0.0);
+        assert!((gex_member_detail_factor(3.75) - 0.5).abs() < f32::EPSILON);
+        assert_eq!(gex_member_detail_factor(5.0), 1.0);
+        assert_eq!(gex_member_detail_factor(8.0), 1.0);
+        assert!(gex_member_detail_factor(3.0) < gex_member_detail_factor(4.0));
+    }
+
+    #[test]
+    fn gex_visual_hierarchy_favors_strong_members_without_mutating_zone_state() {
+        use data::chart::gex::{
+            GexGammaProvenance, GexZone, GexZoneBand, GexZoneSign, GexZoneState,
+        };
+
+        let zone = GexZone {
+            id: 7,
+            observed_at: UnixMs::new(42),
+            lower_price: 99.0,
+            upper_price: 111.0,
+            peak_price: 110.0,
+            net_gex_1pct: 12.0,
+            absolute_gex_1pct: 12.0,
+            normalized_strength: 1.0,
+            persistence_score: 0.8,
+            sign: GexZoneSign::Positive,
+            dominant_expiry: None,
+            gamma_provenance: GexGammaProvenance::Native,
+            state: GexZoneState::Active,
+            missing_buckets: 0,
+            bands: vec![
+                GexZoneBand {
+                    source_strike: Some(100.0),
+                    strike: 100.0,
+                    lower_price: 99.0,
+                    upper_price: 101.0,
+                    normalized_strength: 0.2,
+                    net_gex_1pct: 2.0,
+                },
+                GexZoneBand {
+                    source_strike: Some(110.0),
+                    strike: 110.0,
+                    lower_price: 109.0,
+                    upper_price: 111.0,
+                    normalized_strength: 1.0,
+                    net_gex_1pct: 10.0,
+                },
+            ]
+            .into(),
+        };
+        let before = zone.clone();
+        let weak = gex_band_visual_weight(&zone, &zone.bands[0]);
+        let strong = gex_band_visual_weight(&zone, &zone.bands[1]);
+        let sparse_detail = gex_zone_member_detail(&zone, |price| price.to_f64() as f32, 1.0);
+        let dense_detail = gex_zone_member_detail(&zone, |price| price.to_f64() as f32 * 0.3, 1.0);
+
+        assert!(strong > weak);
+        assert_eq!(sparse_detail, 1.0);
+        assert!(dense_detail > 0.0 && dense_detail < 1.0);
+        assert_eq!(zone, before);
     }
 
     fn proxy_test_point(
