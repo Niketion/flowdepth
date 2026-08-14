@@ -1,35 +1,24 @@
-//! Windowing mode abstraction for platform-specific behavior.
+//! Windowing mode abstraction.
 //!
-//! On Windows, winit multi-window redraw (issue #3648/#4460) causes
-//! `RedrawRequested` starvation when multiple native windows request
-//! redraws simultaneously. The workaround is to use a single native
-//! window with internal overlays/docked panels instead of native popouts.
-//!
-//! On macOS/Linux, native multi-window works correctly.
+//! Native multi-window is supported on every desktop platform. Windows uses
+//! the patched winit dependency that prevents multi-window redraw starvation.
 
 /// Determines how the application handles multiple windows and popouts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowingMode {
     /// Each pane popout opens a separate OS-native window.
-    /// Works correctly on macOS and Linux.
+    /// Supported on Windows, macOS, and Linux.
     NativeMultiWindow,
     /// All UI is rendered inside a single native window.
     /// Panes that would pop out are instead docked/maximized internally.
-    /// Required on Windows due to winit multi-window redraw bugs.
+    /// Retained as an internal fallback mode.
     SingleWindowEmbedded,
 }
 
 impl WindowingMode {
-    /// Returns the default windowing mode for the current platform.
-    ///
-    /// - Windows: `SingleWindowEmbedded` (winit #3648/#4460 workaround)
-    /// - macOS/Linux: `NativeMultiWindow`
+    /// Returns the default windowing mode.
     pub fn platform_default() -> Self {
-        if cfg!(target_os = "windows") {
-            Self::SingleWindowEmbedded
-        } else {
-            Self::NativeMultiWindow
-        }
+        Self::NativeMultiWindow
     }
 
     /// Returns `true` if native popout windows are allowed.
@@ -41,7 +30,7 @@ impl WindowingMode {
     pub fn reason(&self) -> &'static str {
         match self {
             Self::NativeMultiWindow => "platform_supported",
-            Self::SingleWindowEmbedded => "winit_win32_redraw_bug",
+            Self::SingleWindowEmbedded => "explicit_single_window_mode",
         }
     }
 }
@@ -60,18 +49,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn platform_default_is_correct() {
-        #[cfg(target_os = "windows")]
-        assert_eq!(
-            WindowingMode::platform_default(),
-            WindowingMode::SingleWindowEmbedded
-        );
-
-        #[cfg(not(target_os = "windows"))]
+    fn platform_default_allows_native_popouts() {
         assert_eq!(
             WindowingMode::platform_default(),
             WindowingMode::NativeMultiWindow
         );
+        assert!(WindowingMode::platform_default().allows_native_popout());
     }
 
     #[test]

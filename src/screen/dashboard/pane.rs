@@ -3367,7 +3367,7 @@ fn by_basis_default<T>(
 
 /// Determines whether the popout button should be shown in pane controls.
 ///
-/// Returns `false` when native popout is not allowed (e.g., Windows / SingleWindowEmbedded)
+/// Returns `false` when native popout is not allowed (e.g., `SingleWindowEmbedded`)
 /// to avoid showing a button that would be blocked at runtime.
 #[cfg(test)]
 pub fn should_show_popout_button(
@@ -3420,14 +3420,14 @@ mod tests {
 
     #[test]
     fn popout_button_hidden_in_embedded_mode() {
-        // SingleWindowEmbedded (Windows): no popout button even with multiple panes
+        // Explicit embedded mode: no popout button even with multiple panes
         assert!(!should_show_popout_button(2, false, false));
         assert!(!should_show_popout_button(3, false, false));
     }
 
     #[test]
     fn popout_button_shown_in_native_multi_window() {
-        // NativeMultiWindow (macOS/Linux): popout button shown with multiple panes
+        // NativeMultiWindow: popout button shown with multiple panes on every desktop platform
         assert!(should_show_popout_button(2, false, true));
         assert!(should_show_popout_button(3, false, true));
     }
