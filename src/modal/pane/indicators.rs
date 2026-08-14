@@ -1057,14 +1057,28 @@ where
     }
 }
 
-fn available_list<'a, I>(pane: pane_grid::Pane, available: &[I]) -> Element<'a, Message>
+fn indicator_toggle_states<I: Copy + PartialEq>(
+    indicators: &[I],
+    selected: &[I],
+) -> Vec<(I, bool)> {
+    indicators
+        .iter()
+        .copied()
+        .map(|indicator| (indicator, selected.contains(&indicator)))
+        .collect()
+}
+
+fn indicator_toggle_list<'a, I>(
+    pane: pane_grid::Pane,
+    indicators: &[(I, bool)],
+) -> Element<'a, Message>
 where
     I: Indicator + Copy + Into<UiIndicator>,
 {
-    let elements: Vec<Element<_>> = available
+    let elements: Vec<Element<_>> = indicators
         .iter()
-        .map(|indicator| {
-            let base = build_indicator_row(pane, indicator, false);
+        .map(|(indicator, is_selected)| {
+            let base = build_indicator_row(pane, indicator, *is_selected);
             dragger_row(base, false)
         })
         .collect();
@@ -1092,31 +1106,28 @@ where
         .filter(|indicator| content.allows_indicator((*indicator).into()))
         .collect();
 
-    let selected_list = if !selected.is_empty() {
-        Some(selected_list(pane, &selected, reorderable))
-    } else {
-        None
-    };
-
-    let available: Vec<I> = I::for_market(market)
+    // Keep every toggle in the market-defined order. Previously, enabling an indicator moved its
+    // button from the available list to the selected list, making it appear to disappear when the
+    // modal was scrolled.
+    let indicators: Vec<I> = I::for_market(market)
         .iter()
-        .filter(|indicator| {
-            !selected.contains(indicator) && content.allows_indicator((**indicator).into())
-        })
-        .cloned()
+        .copied()
+        .filter(|indicator| content.allows_indicator((*indicator).into()))
         .collect();
-    let available_list = if !available.is_empty() {
-        Some(available_list(pane, &available))
-    } else {
-        None
-    };
+    let toggles = indicator_toggle_states(&indicators, &selected);
 
-    let mut col = iced::widget::Column::new();
-    if let Some(sel) = selected_list {
-        col = col.push(sel);
-    }
-    if let Some(avail) = available_list {
-        col = col.push(avail);
+    let mut col = iced::widget::Column::new()
+        .push(indicator_toggle_list(pane, &toggles))
+        .spacing(4);
+
+    // Preserve drag reordering without using the active list as the toggle list.
+    if reorderable {
+        col = col
+            .push(
+                container(text("Active order").size(crate::style::text_size::SECTION))
+                    .padding(padding::top(8).bottom(4)),
+            )
+            .push(selected_list(pane, &selected, true));
     }
 
     column![
@@ -1126,4 +1137,23 @@ where
     ]
     .spacing(4)
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::indicator_toggle_states;
+
+    #[test]
+    fn activating_indicator_keeps_toggle_order_and_marks_it_selected() {
+        let indicators = ["Volume", "CVD", "VWAP"];
+
+        assert_eq!(
+            indicator_toggle_states(&indicators, &["CVD"]),
+            vec![("Volume", false), ("CVD", true), ("VWAP", false)]
+        );
+        assert_eq!(
+            indicator_toggle_states(&indicators, &["Volume", "CVD"]),
+            vec![("Volume", true), ("CVD", true), ("VWAP", false)]
+        );
+    }
 }
