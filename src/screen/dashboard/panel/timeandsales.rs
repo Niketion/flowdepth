@@ -335,7 +335,7 @@ impl canvas::Program<Message> for TimeAndSales {
     ) -> Vec<canvas::Geometry> {
         let market_type = self.ticker_info.market_type();
 
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let is_scroll_paused = self.is_paused;
         let stacked_bar_h = self.stacked_bar_height();
 

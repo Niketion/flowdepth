@@ -117,7 +117,7 @@ where
         range: RangeInclusive<u64>,
         scale: &YScale,
     ) {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let body_width = ctx.cell_width * self.body_width_factor;
 
         series.for_each_in(range, |x, point| {

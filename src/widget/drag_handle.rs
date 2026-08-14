@@ -1,6 +1,6 @@
 use iced::{
     Element, Event, Length, Rectangle, Size, Vector,
-    advanced::{Clipboard, Layout, Shell, Widget, layout, mouse, overlay, renderer, widget::Tree},
+    advanced::{Layout, Shell, Widget, layout, mouse, overlay, renderer, widget::Tree},
 };
 
 /// A small drag surface that captures the pointer until it is released.
@@ -43,11 +43,8 @@ where
     fn state(&self) -> iced::advanced::widget::tree::State {
         iced::advanced::widget::tree::State::new(State::default())
     }
-    fn children(&self) -> Vec<Tree> {
-        vec![Tree::new(&self.content)]
-    }
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(std::slice::from_ref(&self.content));
+    fn diff(&mut self, tree: &mut Tree) {
+        tree.diff_children(std::slice::from_mut(&mut self.content));
     }
     fn size(&self) -> Size<Length> {
         self.content.as_widget().size()
@@ -69,7 +66,6 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
@@ -97,7 +93,6 @@ where
             layout,
             cursor,
             renderer,
-            clipboard,
             shell,
             viewport,
         );

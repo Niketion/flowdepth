@@ -213,7 +213,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
         let scale_labels = self
             .scale_labels_cache
             .draw(renderer, bounds.size(), |frame| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
 
                 if self.show_icebergs {
                     for event in self.iceberg_events {
@@ -472,7 +472,7 @@ impl<'a> canvas::Program<Message> for OverlayCanvas<'a> {
                 self.draw_full_crosshair(frame, theme, bounds, x, y);
             }
 
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             let bg = palette.background.weakest.color.scale_alpha(0.90);
             let mut layout = TooltipLayout::from_cursor(bounds, local_x, local_y);
 
@@ -714,7 +714,7 @@ impl<'a> OverlayCanvas<'a> {
         cursor: Point,
         circle: &CircleInstance,
     ) {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let width = 270.0_f32.min((bounds.width - 16.0).max(160.0));
         let height = 116.0;
         let x = if cursor.x + width + 12.0 <= bounds.width {
@@ -809,7 +809,7 @@ impl<'a> OverlayCanvas<'a> {
         cursor: Point,
         event: &IcebergEvent,
     ) {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let width = 350.0;
         let height = 218.0;
         let x = if cursor.x + width + 12.0 > bounds.width {
@@ -903,7 +903,7 @@ impl<'a> OverlayCanvas<'a> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let control_rect = self.paused_control_local_rect(bounds);
 
         let icon_size = ui::pause_icon_size(bounds);
@@ -1044,7 +1044,7 @@ impl<'a> OverlayCanvas<'a> {
             return;
         }
 
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let stroke = canvas::Stroke {
             style: canvas::Style::Solid(

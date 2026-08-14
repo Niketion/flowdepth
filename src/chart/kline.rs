@@ -27,7 +27,7 @@ use exchange::unit::{Price, PriceStep, Qty};
 use exchange::{Kline, OpenInterest as OIData, TickerInfo, Trade, UnixMs};
 
 use iced::task::Handle;
-use iced::theme::palette::Extended;
+use iced::theme::Palette;
 use iced::widget::canvas::{self, Event, Geometry, Path, Stroke};
 use iced::{Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse};
 
@@ -2648,7 +2648,7 @@ impl canvas::Program<Message> for KlineChart {
         }
 
         let bounds_size = bounds.size();
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let klines = chart.cache.main.draw(renderer, bounds_size, |frame| {
             let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
@@ -3040,7 +3040,7 @@ fn draw_gex_hover_tooltip(
     latest_market_data_time: UnixMs,
     cursor: Point,
     bounds: Size,
-    palette: &Extended,
+    palette: &Palette,
 ) -> bool {
     if draw_gex_proxy_tooltip(
         frame,
@@ -3076,7 +3076,7 @@ fn draw_gex_proxy_tooltip(
     render_cache: &RefCell<GexRenderCache>,
     cursor: Point,
     bounds: Size,
-    palette: &Extended,
+    palette: &Palette,
 ) -> bool {
     let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
     let world = Point::new(
@@ -3144,7 +3144,7 @@ fn draw_gex_zone_tooltip(
     latest_market_data_time: UnixMs,
     cursor: Point,
     bounds: Size,
-    palette: &Extended,
+    palette: &Palette,
 ) -> bool {
     if history.is_empty() {
         return false;
@@ -3297,7 +3297,7 @@ fn draw_gex_overlay_background(
     chart_interval_ms: u64,
     visible_low: f64,
     visible_high: f64,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     draw_gex_proxy_zone_background(
         frame,
@@ -3641,7 +3641,7 @@ fn draw_gex_overlay_foreground(
     latest_market_data_time: u64,
     visible_region: Rectangle,
     chart_scaling: f32,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     draw_gex_zone_cores(
         frame,
@@ -3853,7 +3853,7 @@ fn gex_zone_band_hit_test(
 fn zone_color(
     zone: &data::chart::gex::GexZone,
     config: &data::chart::gex::GexLevelsConfig,
-    palette: &Extended,
+    palette: &Palette,
 ) -> Color {
     resolve_gex_color(
         match zone.sign {
@@ -3886,7 +3886,7 @@ fn gex_projection_bounds(
     (end > start).then_some((start, end))
 }
 
-fn resolve_gex_color(role: data::chart::gex::GexLevelColor, palette: &Extended) -> Color {
+fn resolve_gex_color(role: data::chart::gex::GexLevelColor, palette: &Palette) -> Color {
     use data::chart::gex::GexLevelColor;
     match role {
         GexLevelColor::Cyan => Color::from_rgb8(0x16, 0xd8, 0xc5),
@@ -3905,7 +3905,7 @@ fn draw_gex_level_label(
     position: Point,
     color: Color,
     scaling: f32,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let width = gex_screen_width_to_world(10.0 + label.chars().count() as f32 * 6.2, scaling);
     let height = gex_screen_width_to_world(16.0, scaling);
@@ -3946,7 +3946,7 @@ fn draw_gex_zone_background(
     bucket_ms: u64,
     visible_low: f64,
     visible_high: f64,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     if history.is_empty() {
         return;
@@ -4185,7 +4185,7 @@ fn draw_gex_zone_profile(
     config: &data::chart::gex::GexLevelsConfig,
     region: Rectangle,
     scaling: f32,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     if region.width * scaling < 320.0 {
         return;
@@ -4259,7 +4259,7 @@ fn draw_gex_zone_markers(
     config: &data::chart::gex::GexLevelsConfig,
     region: Rectangle,
     scaling: f32,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let markers = gex_deribit_markers(snapshot, config);
     let gutter = if config.show_current_profile && region.width * scaling >= 320.0 {
@@ -4402,7 +4402,7 @@ fn draw_vwap_overlay(
     interval_to_x: impl Fn(u64) -> f32,
     price_to_y: impl Fn(Price) -> f32,
     config: &VwapConfig,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let sessions = build_vwap_sessions(data_source, earliest, latest, config);
     let vwap_color = palette.warning.strong.color.scale_alpha(0.96);
@@ -4785,7 +4785,7 @@ fn draw_session_volume_profiles(
     cell_height: f32,
     tick_size: PriceStep,
     config: &SessionVolumeProfileConfig,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let profiles = build_session_profiles(data_source, earliest, latest, tick_size, config);
     let style = VolumeProfileVisualSettings::from(config);
@@ -4813,7 +4813,7 @@ fn draw_fixed_range_volume_profile(
     cell_height: f32,
     tick_size: PriceStep,
     config: &FixedRangeVolumeProfileConfig,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     if let Some(profile) =
         build_fixed_range_volume_profile(data_source, from, to, tick_size, config)
@@ -4837,7 +4837,7 @@ fn draw_volume_profile(
     price_to_y: &impl Fn(Price) -> f32,
     cell_height: f32,
     style: VolumeProfileVisualSettings,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let row_height = cell_height * f32::from(style.row_size_ticks.max(1)) * 0.86;
     let session_left = interval_to_x(profile.start);
@@ -4931,7 +4931,7 @@ fn draw_footprint_kline(
     x_position: f32,
     candle_width: f32,
     kline: &Kline,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let y_open = price_to_y(kline.open);
     let y_high = price_to_y(kline.high);
@@ -4974,7 +4974,7 @@ fn draw_candle_dp(
     frame: &mut canvas::Frame,
     price_to_y: impl Fn(Price) -> f32,
     candle_width: f32,
-    palette: &Extended,
+    palette: &Palette,
     x_position: f32,
     kline: &Kline,
 ) {
@@ -5024,7 +5024,7 @@ pub struct RenderedVolumeBubble {
 fn volume_bubble_color(
     bubble: &VolumeBubbleCluster,
     color_mode: BubbleColorMode,
-    palette: &Extended,
+    palette: &Palette,
 ) -> Color {
     let total_qty = bubble.total_qty.to_f64().max(f64::EPSILON);
     let delta = bubble.delta_qty.to_f64();
@@ -5069,7 +5069,7 @@ fn build_rendered_volume_bubbles(
     candle_width: f32,
     scaling: f32,
     config: &VolumeBubbleConfig,
-    palette: &Extended,
+    palette: &Palette,
     now: UnixMs,
     stabilized_threshold: &RefCell<StabilizedBubbleThreshold>,
 ) -> Vec<RenderedVolumeBubble> {
@@ -5301,7 +5301,7 @@ fn draw_rendered_volume_bubbles(
     frame: &mut canvas::Frame,
     bubbles: &[RenderedVolumeBubble],
     scaling: f32,
-    palette: &Extended,
+    palette: &Palette,
     config: &VolumeBubbleConfig,
 ) {
     for bubble in bubbles {
@@ -5530,7 +5530,7 @@ fn bubble_tooltip_lines(
 fn draw_volume_bubble_tooltip(
     frame: &mut canvas::Frame,
     bubble: &RenderedVolumeBubble,
-    palette: &Extended,
+    palette: &Palette,
     ticker_info: &TickerInfo,
     config: &VolumeBubbleConfig,
     cursor: Point,
@@ -6427,7 +6427,7 @@ fn draw_imbalance_markers(
     color_scale: Option<usize>,
     ignore_zeros: bool,
     cell_height: f32,
-    palette: &Extended,
+    palette: &Palette,
     buyside_x: f32,
     sellside_x: f32,
     rect_width: f32,
@@ -6509,7 +6509,7 @@ fn draw_crosshair_tooltip(
     data: &PlotData<KlineDataPoint>,
     ticker_info: &TickerInfo,
     frame: &mut canvas::Frame,
-    palette: &Extended,
+    palette: &Palette,
     basis: Basis,
     at_interval: Option<u64>,
     visible_range: (u64, u64),
@@ -6652,7 +6652,7 @@ enum ImbalanceSide {
 }
 
 impl ImbalanceSide {
-    fn volume_bg_color(self, qty: f64, max_qty: f64, palette: &Extended) -> Color {
+    fn volume_bg_color(self, qty: f64, max_qty: f64, palette: &Palette) -> Color {
         const MIN_ALPHA: f32 = 0.04;
 
         let intensity = if max_qty > 0.0 {
@@ -6673,7 +6673,7 @@ impl ImbalanceSide {
         qty: f64,
         max_qty: f64,
         default_color: Color,
-        palette: &Extended,
+        palette: &Palette,
     ) -> Color {
         let cell_color = self.volume_bg_color(qty, max_qty, palette);
         let cell_background = composite_color(cell_color, palette.background.base.color);
@@ -6688,7 +6688,7 @@ impl ImbalanceSide {
         }
     }
 
-    fn marker_bg_color(self, palette: &Extended, alpha: f32) -> Color {
+    fn marker_bg_color(self, palette: &Palette, alpha: f32) -> Color {
         let accent = match self {
             ImbalanceSide::Buy => palette.success.strong.color,
             ImbalanceSide::Sell => palette.danger.strong.color,
@@ -6753,7 +6753,7 @@ impl ImbalanceSide {
     fn draw_table_marker(
         self,
         frame: &mut canvas::Frame,
-        palette: &Extended,
+        palette: &Palette,
         alpha: f32,
         qty: f64,
         max_qty: f64,
@@ -6813,7 +6813,7 @@ struct FootprintCellLayout<'a> {
     cell_w: f32,
     cell_h: f32,
     candle_w: f32,
-    pal: &'a Extended,
+    pal: &'a Palette,
     cluster: ClusterKind,
     gaps: ContentGaps,
 }
@@ -6955,7 +6955,7 @@ impl TableArea {
         table_layout: &TableLayout,
         candle_width: f32,
         kline: &Kline,
-        palette: &Extended,
+        palette: &Palette,
     ) -> Self {
         draw_footprint_kline(
             frame,

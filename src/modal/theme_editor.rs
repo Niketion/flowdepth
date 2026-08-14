@@ -1,6 +1,7 @@
+use crate::widget::pick_list;
 use iced::{
     Alignment, Element,
-    widget::{button, column, container, pick_list, row, space, text_input::default},
+    widget::{button, column, container, row, space, text_input::default},
 };
 
 use crate::{
@@ -68,7 +69,7 @@ impl ThemeEditor {
     }
 
     fn focused_color(&self, theme: &iced_core::Theme) -> iced_core::Color {
-        let palette = theme.palette();
+        let palette = theme.seed();
         match self.component {
             Component::Background => palette.background,
             Component::Text => palette.text,
@@ -85,7 +86,7 @@ impl ThemeEditor {
                 self.hex_input = None;
                 self.editing = Some(hsva);
 
-                let mut new_palette = theme.palette();
+                let mut new_palette = theme.seed();
                 let color = data::config::theme::from_hsva(hsva);
 
                 match self.component {
@@ -112,7 +113,7 @@ impl ThemeEditor {
                 let mut action = None;
 
                 if let Some(color) = data::config::theme::hex_to_color(&input) {
-                    let mut new_palette = theme.palette();
+                    let mut new_palette = theme.seed();
 
                     match self.component {
                         Component::Background => new_palette.background = color,
@@ -156,13 +157,13 @@ impl ThemeEditor {
         let hex_input = iced::widget::text_input(
             "",
             self.hex_input
-                .as_deref()
-                .unwrap_or(data::config::theme::color_to_hex(color).as_str()),
+                .clone()
+                .unwrap_or_else(|| data::config::theme::color_to_hex(color)),
         )
         .on_input(Message::HexInput)
         .width(80)
         .style(move |theme: &iced::Theme, status| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
 
             iced::widget::text_input::Style {
                 border: iced::Border {
@@ -197,7 +198,7 @@ impl ThemeEditor {
         .spacing(10);
 
         container(content)
-            .max_width(380)
+            .width(iced::Length::Fit.max(380))
             .padding(24)
             .style(style::dashboard_modal)
             .into()

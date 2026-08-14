@@ -27,7 +27,7 @@ use exchange::{
 use iced::widget::canvas::{self, Event, Geometry, Path};
 use iced::{
     Alignment, Color, Element, Point, Rectangle, Renderer, Size, Theme, Vector, mouse,
-    theme::palette::Extended,
+    theme::Palette,
 };
 
 use enum_map::EnumMap;
@@ -88,7 +88,7 @@ fn draw_trade_tooltip(
     time: UnixMs,
     trade: &GroupedTrade,
     min_ticksize: exchange::unit::MinTicksize,
-    palette: &Extended,
+    palette: &Palette,
     three_dimensional: bool,
 ) {
     let width = 270.0_f32.min((bounds.width - 16.0).max(160.0));
@@ -609,7 +609,7 @@ impl canvas::Program<Message> for HeatmapChart {
         let market_type = chart.ticker_info.market_type();
 
         let bounds_size = bounds.size();
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let heatmap = chart.cache.main.draw(renderer, bounds_size, |frame| {
             let center = Vector::new(bounds.width / 2.0, bounds.height / 2.0);
@@ -1215,7 +1215,7 @@ impl canvas::Program<Message> for HeatmapChart {
                         (TOOLTIP_WIDTH - ((col_count - 1.0) * TOOLTIP_COL_GAP_PX)) / col_count;
                     let cell_height_overlay = TOOLTIP_HEIGHT / 3.0;
 
-                    let palette = theme.extended_palette();
+                    let palette = theme.palette();
                     for (display_row_idx, &data_price_key) in
                         prices_for_display_lookup.iter().enumerate()
                     {
@@ -1281,7 +1281,7 @@ impl canvas::Program<Message> for HeatmapChart {
     }
 }
 
-fn depth_color(palette: &Extended, is_bid: bool, alpha: f32) -> Color {
+fn depth_color(palette: &Palette, is_bid: bool, alpha: f32) -> Color {
     if is_bid {
         palette.success.strong.color.scale_alpha(alpha)
     } else {
@@ -1293,7 +1293,7 @@ fn draw_volume_profile(
     frame: &mut canvas::Frame,
     region: &Rectangle,
     kind: &ProfileKind,
-    palette: &Extended,
+    palette: &Palette,
     chart: &ViewState,
     timeseries: &TimeSeries<HeatmapDataPoint>,
     area_width: f32,

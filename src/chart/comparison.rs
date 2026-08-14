@@ -681,7 +681,7 @@ pub mod series_editor {
                         .clone()
                         .unwrap_or_else(|| s.name.clone().unwrap_or_default());
                     inner_col = inner_col.push(
-                        iced::widget::text_input("Set a custom label name", &label_name)
+                        iced::widget::text_input("Set a custom label name", label_name)
                             .on_input(Message::NameChanged)
                             .size(crate::style::text_size::SECTION)
                             .padding(4)

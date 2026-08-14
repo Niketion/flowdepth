@@ -17,11 +17,12 @@ use data::panel::ladder;
 use data::panel::timeandsales::{StackedBar, StackedBarRatio};
 use data::util::format_with_commas;
 
+use crate::widget::pick_list;
 use iced::widget::{checkbox, space};
 use iced::{
     Alignment, Element, Length,
     widget::{
-        button, column, container, pane_grid, pick_list, radio, row, slider, text,
+        button, column, container, pane_grid, radio, row, slider, text,
         tooltip::Position as TooltipPosition,
     },
 };
@@ -32,9 +33,8 @@ where
     T: Into<Element<'a, Message>>,
 {
     container(scrollable_content(content))
-        .width(Length::Shrink)
+        .width(Length::Shrink.max(max_width))
         .padding(28)
-        .max_width(max_width)
         .style(style::chart_modal)
         .into()
 }

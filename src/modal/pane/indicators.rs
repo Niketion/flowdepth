@@ -2,6 +2,7 @@ use crate::screen::dashboard::pane::{self, Message};
 use crate::style::{self, Icon, icon_text};
 use crate::widget::{column_drag, dragger_row, labeled_slider};
 
+use crate::widget::pick_list;
 use data::chart::indicator::{Indicator, KlineIndicator, UiIndicator};
 use data::chart::kline::{
     BubbleColorMode, BubbleLabelMode, BubbleThresholdMode, Config as KlineConfig, CvdRenderStyle,
@@ -12,7 +13,7 @@ use data::layout::pane::VisualConfig;
 use data::util::format_with_commas;
 use iced::{
     Element, Length, padding,
-    widget::{button, checkbox, column, container, pane_grid, pick_list, row, space, text},
+    widget::{button, checkbox, column, container, pane_grid, row, space, text},
 };
 
 pub fn view<'a, I>(
@@ -38,7 +39,7 @@ where
     };
 
     container(content_row)
-        .max_width(200)
+        .width(iced::Length::Fit.max(200))
         .padding(16)
         .style(style::chart_modal)
         .into()
@@ -975,7 +976,7 @@ pub fn view_kline<'a>(
     }
 
     container(crate::widget::scrollable_content(sections))
-        .max_width(340)
+        .width(iced::Length::Fit.max(340))
         .padding(16)
         .style(style::chart_modal)
         .into()

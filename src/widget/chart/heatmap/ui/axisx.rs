@@ -159,7 +159,7 @@ impl<'a> canvas::Program<Message> for AxisXLabelCanvas<'a> {
         if self.aggr_time == 0 || !self.column_world.is_finite() || self.column_world <= 0.0 {
             return vec![];
         }
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let labels = self.cache.draw(renderer, bounds.size(), |frame| {
             let vw = bounds.width;

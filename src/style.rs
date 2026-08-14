@@ -1,5 +1,5 @@
 use iced::font::{Family, Stretch, Weight};
-use iced::theme::palette::Extended;
+use iced::theme::Palette;
 use iced::widget::Text;
 use iced::widget::canvas::{LineDash, Stroke};
 use iced::widget::container::{self, Style};
@@ -8,7 +8,7 @@ use iced::widget::scrollable::{AutoScroll, Rail, Scroller};
 use iced::{Border, Color, Font, Renderer, Shadow, Theme, widget};
 
 pub const ICONS_BYTES: &[u8] = include_bytes!(".././assets/fonts/icons.ttf");
-pub const ICONS_FONT: Font = Font::with_name("icons");
+pub const ICONS_FONT: Font = Font::new("icons");
 
 pub const AZERET_MONO_BYTES: &[u8] = include_bytes!("../assets/fonts/AzeretMono-Regular.ttf");
 pub const AZERET_MONO: Font = Font {
@@ -93,7 +93,7 @@ pub fn venue_icon(venue: exchange::adapter::Venue) -> Icon {
 }
 
 pub fn secondary_text(theme: &Theme) -> iced::widget::text::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     iced::widget::text::Style {
         color: Some(palette.secondary.weak.color),
@@ -102,7 +102,7 @@ pub fn secondary_text(theme: &Theme) -> iced::widget::text::Style {
 
 #[cfg(target_os = "macos")]
 pub fn title_text(theme: &Theme) -> iced::widget::text::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     iced::widget::text::Style {
         color: Some(palette.background.weakest.color),
@@ -110,7 +110,7 @@ pub fn title_text(theme: &Theme) -> iced::widget::text::Style {
 }
 
 pub fn tooltip(theme: &Theme) -> Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     Style {
         background: Some(palette.background.weakest.color.into()),
@@ -130,7 +130,7 @@ pub mod button {
     };
 
     pub fn confirm(theme: &Theme, status: Status, is_active: bool) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let color_alpha = if palette.is_dark { 0.2 } else { 0.6 };
 
@@ -156,7 +156,7 @@ pub mod button {
     }
 
     pub fn cancel(theme: &Theme, status: Status, is_active: bool) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let color_alpha = if palette.is_dark { 0.2 } else { 0.6 };
 
@@ -182,7 +182,7 @@ pub mod button {
     }
 
     pub fn layout_name(theme: &Theme, status: Status) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let bg_color = match status {
             Status::Pressed => Some(palette.background.weak.color.into()),
@@ -203,7 +203,7 @@ pub mod button {
     }
 
     pub fn transparent(theme: &Theme, status: Status, is_clicked: bool) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         Style {
             text_color: palette.background.base.text,
@@ -234,7 +234,7 @@ pub mod button {
     }
 
     pub fn toolbar(theme: &Theme, status: Status, is_active: bool) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         Style {
             text_color: palette.background.base.text,
             background: match status {
@@ -255,7 +255,7 @@ pub mod button {
     }
 
     pub fn toolbar_primary(theme: &Theme, status: Status, _is_active: bool) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         Style {
             text_color: palette.primary.base.color,
             background: match status {
@@ -273,7 +273,7 @@ pub mod button {
     }
 
     pub fn add_view_card(theme: &Theme, status: Status) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         Style {
             text_color: palette.background.base.text,
             background: Some(match status {
@@ -295,7 +295,7 @@ pub mod button {
     }
 
     pub fn modifier(theme: &Theme, status: Status, is_clicked: bool) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         Style {
             text_color: if status == Status::Disabled {
@@ -330,7 +330,7 @@ pub mod button {
     }
 
     pub fn bordered_toggle(theme: &Theme, status: Status, is_active: bool) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         iced::widget::button::Style {
             text_color: {
@@ -368,7 +368,7 @@ pub mod button {
     }
 
     pub fn info(theme: &Theme, _status: Status) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         Style {
             text_color: palette.background.base.text,
@@ -382,7 +382,7 @@ pub mod button {
     }
 
     pub fn text_link(theme: &Theme, status: Status) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let text_color = match status {
             Status::Active => palette.secondary.base.color,
@@ -404,7 +404,7 @@ pub mod button {
     }
 
     pub fn text_link_secondary(theme: &Theme, status: Status) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let text_color = match status {
             Status::Active => palette.secondary.weak.color,
@@ -426,7 +426,7 @@ pub mod button {
     }
 
     pub fn menu_body(theme: &Theme, status: Status, is_selected: bool) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         Style {
             text_color: palette.background.base.text,
@@ -458,7 +458,7 @@ pub mod button {
     }
 
     pub fn ticker_card(theme: &Theme, status: Status) -> Style {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let color = if palette.is_dark {
             palette.background.weak.color
@@ -493,7 +493,7 @@ pub mod button {
 
 // Panes
 pub fn pane_grid(theme: &Theme) -> widget::pane_grid::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     widget::pane_grid::Style {
         hovered_region: Highlight {
@@ -516,7 +516,7 @@ pub fn pane_grid(theme: &Theme) -> widget::pane_grid::Style {
 }
 
 pub fn pane_title_bar(theme: &Theme) -> Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     Style {
         background: {
@@ -531,7 +531,7 @@ pub fn pane_title_bar(theme: &Theme) -> Style {
 }
 
 pub fn pane_background(theme: &Theme, is_focused: bool) -> Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     let color = if palette.is_dark {
         palette.background.weak.color
@@ -557,7 +557,7 @@ pub fn pane_background(theme: &Theme, is_focused: bool) -> Style {
 
 // Modals
 pub fn chart_modal(theme: &Theme) -> Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     Style {
         text_color: Some(palette.background.base.text),
@@ -583,7 +583,7 @@ pub fn chart_modal(theme: &Theme) -> Style {
 }
 
 pub fn dashboard_modal(theme: &Theme) -> Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     Style {
         background: Some(
@@ -633,7 +633,7 @@ pub fn startup_modal(_theme: &Theme) -> Style {
 }
 
 pub fn modal_container(theme: &Theme) -> Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     Style {
         text_color: Some(palette.background.base.text),
@@ -653,7 +653,7 @@ pub fn modal_container(theme: &Theme) -> Style {
 }
 
 pub fn colored_circle_container(theme: &Theme, color: iced::Color) -> Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     Style {
         background: Some(color.into()),
@@ -668,7 +668,7 @@ pub fn colored_circle_container(theme: &Theme, color: iced::Color) -> Style {
 }
 
 pub fn dragger_row_container(theme: &Theme) -> Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     let bg_color = palette.background.strong.color;
 
@@ -695,7 +695,7 @@ pub fn validated_text_input(
     status: widget::text_input::Status,
     is_valid: bool,
 ) -> widget::text_input::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     let (background, border_color, placeholder) = match status {
         widget::text_input::Status::Active => (
@@ -726,7 +726,6 @@ pub fn validated_text_input(
                 palette.danger.base.color
             },
         },
-        icon: palette.background.strong.text,
         placeholder,
         value: palette.background.base.text,
         selection: palette.background.strongest.color,
@@ -734,7 +733,7 @@ pub fn validated_text_input(
 }
 
 pub fn ticker_card(theme: &Theme) -> Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     Style {
         background: {
@@ -755,7 +754,7 @@ pub fn ticker_card(theme: &Theme) -> Style {
 
 // the bar that lights up depending on the price change
 pub fn ticker_card_bar(theme: &Theme, color_alpha: f32) -> Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     Style {
         background: {
@@ -780,7 +779,7 @@ pub fn ticker_card_bar(theme: &Theme, color_alpha: f32) -> Style {
 
 // Scrollable
 pub fn scroll_bar(theme: &Theme, status: widget::scrollable::Status) -> widget::scrollable::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     let (rail_bg, scroller_bg) = match status {
         widget::scrollable::Status::Hovered { .. } | widget::scrollable::Status::Dragged { .. } => {
@@ -839,7 +838,7 @@ pub fn scroll_bar(theme: &Theme, status: widget::scrollable::Status) -> widget::
 
 // custom widgets
 pub fn split_ruler(theme: &Theme) -> iced::widget::rule::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     iced::widget::rule::Style {
         color: palette.background.strong.color.scale_alpha(0.25),
@@ -851,7 +850,7 @@ pub fn split_ruler(theme: &Theme) -> iced::widget::rule::Style {
 
 // crosshair dashed line for charts
 pub fn dashed_line(theme: &'_ Theme) -> Stroke<'_> {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
 
     Stroke::with_color(
         Stroke {
@@ -870,7 +869,7 @@ pub fn dashed_line(theme: &'_ Theme) -> Stroke<'_> {
     )
 }
 
-pub fn dashed_line_from_palette(palette: &'_ Extended) -> Stroke<'_> {
+pub fn dashed_line_from_palette(palette: &'_ Palette) -> Stroke<'_> {
     Stroke::with_color(
         Stroke {
             width: 1.0,

@@ -3,6 +3,7 @@ use crate::chart::ticks::AxisOverlayLabel;
 use crate::chart::{Chart, DrawingMessage, Interaction, Message};
 use crate::widget::color_picker::color_picker;
 use crate::widget::drag_handle;
+use crate::widget::pick_list;
 use data::chart::{
     Basis,
     kline::{SessionProfileMode, SessionProfilePlacement, drawing::*},
@@ -12,8 +13,8 @@ use iced::widget::canvas::{self, Frame, Geometry, LineDash, Path, Stroke};
 use iced::{
     Alignment, Color, Element, Length, Point, Rectangle, Renderer, Size, Theme, Vector, mouse,
     widget::{
-        button, checkbox, column, container, mouse_area, opaque, pick_list, row, scrollable,
-        slider, space, svg, text, text_input,
+        button, checkbox, column, container, mouse_area, opaque, row, scrollable, slider, space,
+        svg, text, text_input,
     },
 };
 use iced_core::mouse::{Click, click};
@@ -2020,7 +2021,7 @@ fn toolbar(
             .width(16)
             .height(16)
             .style(|theme: &Theme, _| svg::Style {
-                color: Some(theme.palette().text),
+                color: Some(theme.palette().background.base.text),
             }),
         )
         .width(28)
@@ -2040,7 +2041,7 @@ fn toolbar(
                 .width(16)
                 .height(16)
                 .style(|theme: &Theme, _| svg::Style {
-                    color: Some(theme.palette().text),
+                    color: Some(theme.palette().background.base.text),
                 }),
             )
             .width(28)
@@ -2058,7 +2059,7 @@ fn toolbar(
                 .width(16)
                 .height(16)
                 .style(|theme: &Theme, _| svg::Style {
-                    color: Some(theme.palette().text),
+                    color: Some(theme.palette().background.base.text),
                 }),
         )
         .width(28)
@@ -2102,7 +2103,7 @@ fn toolbar(
                     .width(16)
                     .height(16)
                     .style(|theme: &Theme, _| svg::Style {
-                        color: Some(theme.palette().text),
+                        color: Some(theme.palette().background.base.text),
                     }),
             )
             .width(28)
@@ -2123,7 +2124,7 @@ fn toolbar(
                 .width(16)
                 .height(16)
                 .style(|theme: &Theme, _| svg::Style {
-                    color: Some(theme.palette().text),
+                    color: Some(theme.palette().background.base.text),
                 }),
         )
         .width(28)
@@ -2140,7 +2141,7 @@ fn toolbar(
             .width(16)
             .height(16)
             .style(|theme: &Theme, _| svg::Style {
-                color: Some(theme.palette().text),
+                color: Some(theme.palette().background.base.text),
             }),
         )
         .width(28)
@@ -2438,7 +2439,7 @@ fn settings(chart: &KlineChart) -> Element<'_, Message> {
 
     container(controls)
         .padding(10)
-        .max_width(240)
+        .width(iced::Length::Fit.max(240))
         .style(crate::style::chart_modal)
         .into()
 }
@@ -2546,7 +2547,7 @@ fn fixed_range_volume_profile_settings(drawing: &Drawing) -> Element<'_, Message
         .spacing(6),
     )
     .padding(10)
-    .max_width(240)
+    .width(iced::Length::Fit.max(240))
     .style(crate::style::chart_modal)
     .into()
 }

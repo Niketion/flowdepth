@@ -267,13 +267,13 @@ impl Sidebar {
                 .style(move |theme: &iced::Theme| iced::widget::text::Style {
                     color: Some(match connectivity {
                         crate::market_service::ConnectivityPhase::Online => {
-                            theme.extended_palette().success.base.color
+                            theme.palette().success.base.color
                         }
                         crate::market_service::ConnectivityPhase::Connecting => {
-                            theme.extended_palette().warning.base.color
+                            theme.palette().warning.base.color
                         }
                         crate::market_service::ConnectivityPhase::Offline => {
-                            theme.extended_palette().danger.base.color
+                            theme.palette().danger.base.color
                         }
                     }),
                 });

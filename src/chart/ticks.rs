@@ -7,7 +7,7 @@ use super::{Basis, Interaction, Message};
 use data::chart::ticks::x::TimeTickTier;
 use iced::{
     Alignment, Color, Point, Rectangle, Size,
-    theme::palette::Extended,
+    theme::Palette,
     widget::canvas::{self, Frame},
 };
 
@@ -39,7 +39,7 @@ impl AxisLabel {
         axis_bounds: Rectangle,
         tier: TimeTickTier,
         is_crosshair: bool,
-        palette: &Extended,
+        palette: &Palette,
     ) -> Self {
         let content_width = text_content.len() as f32
             * if is_crosshair {
@@ -245,7 +245,7 @@ pub struct AxisOverlayLabel {
 /// `Main` labels use the standard readable text color; `Secondary` (coarse
 /// calendar boundaries) use the strongest text color so they stand out and
 /// stay readable on the chart background.
-fn x_label_text_color(palette: &Extended, tier: TimeTickTier, is_crosshair: bool) -> Color {
+fn x_label_text_color(palette: &Palette, tier: TimeTickTier, is_crosshair: bool) -> Color {
     if is_crosshair {
         palette.secondary.base.text
     } else {

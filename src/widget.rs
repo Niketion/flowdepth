@@ -26,6 +26,21 @@ pub const PANE_CONTROL_BTN_HEIGHT: f32 = 26.0;
 
 pub const DEFAULT_TOOLTIP_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// Compatibility wrapper for the pre-0.15 `pick_list` constructor.
+pub fn pick_list<'a, T, L, V, Message>(
+    options: L,
+    selected: Option<V>,
+    on_select: impl Fn(T) -> Message + 'a,
+) -> iced::widget::PickList<'a, T, L, V, Message>
+where
+    T: PartialEq + Clone + ToString + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
+    V: std::borrow::Borrow<T> + 'a,
+    Message: Clone + 'a,
+{
+    iced::widget::pick_list(selected, options, ToString::to_string).on_select(on_select)
+}
+
 /// A compact GIF-backed activity indicator used in pane headers.
 pub fn loading_spinner<'a, Message: 'a>() -> Element<'a, Message> {
     static FRAMES: std::sync::OnceLock<Vec<image::Handle>> = std::sync::OnceLock::new();
@@ -212,13 +227,19 @@ pub fn labeled_slider<'a, T, Message: Clone + 'static>(
     step: Option<T>,
 ) -> Element<'a, Message>
 where
-    T: 'static + Copy + PartialOrd + Into<f64> + From<u8> + num_traits::FromPrimitive,
+    T: 'static
+        + Copy
+        + PartialOrd
+        + Into<f64>
+        + From<u8>
+        + num_traits::AsPrimitive<f64>
+        + num_traits::FromPrimitive,
 {
     let mut slider = iced::widget::slider(range, current, on_change)
         .width(Fill)
         .height(24)
         .style(|theme: &Theme, status| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
 
             slider::Style {
                 rail: slider::Rail {
@@ -263,8 +284,8 @@ where
 
 pub fn numeric_input_box<'a, F, Message: Clone + 'static>(
     label: &'a str,
-    placeholder: &str,
-    raw_input_buf: &str,
+    placeholder: String,
+    raw_input_buf: String,
     is_input_valid: bool,
     on_input_changed: F,
     on_submit_maybe: Option<Message>,

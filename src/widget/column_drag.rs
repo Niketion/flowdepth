@@ -12,7 +12,7 @@
 // Copyright 2019 Héctor Ramón, Iced contributors
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
-use iced::advanced::{Clipboard, Shell, overlay, renderer};
+use iced::advanced::{Shell, overlay, renderer};
 use iced::alignment::{self, Alignment};
 use iced::event::Event;
 use iced::mouse;
@@ -166,11 +166,6 @@ where
     /// Adds an element to the [`Column`].
     pub fn push(mut self, child: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
         let child = child.into();
-        let child_size = child.as_widget().size_hint();
-
-        self.width = self.width.enclose(child_size.width);
-        self.height = self.height.enclose(child_size.height);
-
         self.children.push(child);
         self
     }
@@ -279,12 +274,16 @@ where
         tree::State::new(Action::Idle)
     }
 
-    fn children(&self) -> Vec<Tree> {
-        self.children.iter().map(Tree::new).collect()
-    }
+    fn diff(&mut self, tree: &mut Tree) {
+        tree.diff_children(&mut self.children);
 
-    fn diff(&self, tree: &mut Tree) {
-        tree.diff_children(&self.children);
+        if self.width.is_fit() || self.height.is_fit() {
+            for child in &self.children {
+                let size = child.as_widget().size();
+                self.width = self.width.cross(size.width);
+                self.height = self.height.stack(size.height);
+            }
+        }
     }
 
     fn size(&self) -> Size<Length> {
@@ -300,7 +299,7 @@ where
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let limits = limits.max_width(self.max_width);
+        let limits = limits.width(Length::Fit.max(self.max_width));
 
         layout::flex::resolve(
             layout::flex::Axis::Vertical,
@@ -333,7 +332,6 @@ where
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
-        clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
@@ -431,9 +429,9 @@ where
             .zip(&mut tree.children)
             .zip(layout.children())
             .for_each(|((child, tree), layout)| {
-                child.as_widget_mut().update(
-                    tree, event, layout, cursor, renderer, clipboard, shell, viewport,
-                );
+                child
+                    .as_widget_mut()
+                    .update(tree, event, layout, cursor, renderer, shell, viewport);
             });
     }
 

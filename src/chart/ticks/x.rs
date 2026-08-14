@@ -9,7 +9,7 @@ use exchange::UnixMs;
 use iced::Point;
 
 use super::{Basis, Interaction, Message};
-use iced::theme::palette::Extended;
+use iced::theme::Palette;
 use iced::{
     Event, Rectangle, Renderer, Size, Theme, mouse,
     widget::canvas::{self, Cache, Geometry},
@@ -27,7 +27,7 @@ pub fn generate_time_labels(
     latest: UnixMs,
     span_ms: u64,
     x_labels_can_fit: i32,
-    palette: &Extended,
+    palette: &Palette,
 ) -> Vec<AxisLabel> {
     let width = axis_bounds.width;
 
@@ -93,7 +93,7 @@ impl AxisLabelsX<'_> {
         cursor_pos: Point,
         region: Rectangle,
         bounds: Rectangle,
-        palette: &Extended,
+        palette: &Palette,
     ) -> Option<AxisLabel> {
         match self.basis {
             Basis::Tick(_) => {
@@ -306,7 +306,7 @@ impl canvas::Program<Message> for AxisLabelsX<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
             let region = self.visible_region(frame.size());

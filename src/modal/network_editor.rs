@@ -5,9 +5,10 @@ use crate::{
 };
 use exchange::proxy::{Proxy, ProxyScheme};
 
+use crate::widget::pick_list;
 use iced::{
     Element, Theme,
-    widget::{button, checkbox, column, container, pick_list, radio, row, text, text_input},
+    widget::{button, checkbox, column, container, radio, row, text, text_input},
 };
 
 pub enum Action {
@@ -167,7 +168,7 @@ impl NetworkEditor {
                     .style(|theme: &iced::Theme| {
                         let palette = theme.palette();
                         iced::widget::text::Style {
-                            color: Some(palette.primary),
+                            color: Some(palette.primary.base.color),
                         }
                     }),
             )
@@ -185,7 +186,7 @@ impl NetworkEditor {
                     .style(|theme: &iced::Theme| {
                         let palette = theme.palette();
                         iced::widget::text::Style {
-                            color: Some(palette.danger),
+                            color: Some(palette.danger.base.color),
                         }
                     });
             content.push(
@@ -198,7 +199,7 @@ impl NetworkEditor {
         };
 
         container(content)
-            .max_width(320)
+            .width(iced::Length::Fit.max(320))
             .padding(24)
             .style(style::dashboard_modal)
             .into()

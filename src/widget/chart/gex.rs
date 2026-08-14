@@ -118,7 +118,7 @@ struct GaugeVisual {
 }
 
 fn semantic_pair(theme: &Theme, semantic: Semantic) -> iced::theme::palette::Pair {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     match semantic {
         Semantic::Primary => palette.primary.weak,
         Semantic::Secondary => palette.secondary.weak,
@@ -129,7 +129,7 @@ fn semantic_pair(theme: &Theme, semantic: Semantic) -> iced::theme::palette::Pai
 }
 
 fn card_style(theme: &Theme) -> container::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     container::Style {
         background: None,
         border: Border {
@@ -159,7 +159,7 @@ fn gauge_view<'a>(
 ) -> Element<'a, gex::Message> {
     const GAUGE_ASPECT_RATIO: f32 = 180.0 / 108.0;
 
-    responsive(move |available| {
+    responsive(move |available| -> Element<'a, gex::Message> {
         let width = (height * GAUGE_ASPECT_RATIO).min(available.width);
         let fitted_height = (width / GAUGE_ASPECT_RATIO).min(height);
         let base = svg(svg::Handle::from_memory(gauge.asset))
@@ -167,7 +167,7 @@ fn gauge_view<'a>(
             .height(fitted_height)
             .opacity(if gauge.muted { 0.32_f32 } else { 0.88_f32 })
             .style(|theme: &Theme, _| svg::Style {
-                color: Some(theme.extended_palette().secondary.strong.color),
+                color: Some(theme.palette().secondary.strong.color),
             });
         let needle = canvas(GaugeNeedle {
             normalized: gauge.normalized,
@@ -228,14 +228,7 @@ impl canvas::Program<gex::Message> for GaugeNeedle {
         frame.stroke(
             &canvas::Path::line(center, tip),
             canvas::Stroke::default()
-                .with_color(
-                    theme
-                        .extended_palette()
-                        .background
-                        .strong
-                        .color
-                        .scale_alpha(0.72),
-                )
+                .with_color(theme.palette().background.strong.color.scale_alpha(0.72))
                 .with_width(4.2 * scale),
         );
         frame.stroke(
@@ -247,7 +240,7 @@ impl canvas::Program<gex::Message> for GaugeNeedle {
         frame.fill(&canvas::Path::circle(center, 5.2 * scale), color);
         frame.fill(
             &canvas::Path::circle(center, 2.2 * scale),
-            theme.extended_palette().background.weak.color,
+            theme.palette().background.weak.color,
         );
         vec![frame.into_geometry()]
     }
@@ -304,7 +297,7 @@ fn analytics_section<'a>(
         .width(Length::Fill)
         .wrapping(iced::widget::text::Wrapping::None)
         .style(|theme: &Theme| iced::widget::text::Style {
-            color: Some(theme.palette().text.scale_alpha(0.58)),
+            color: Some(theme.palette().background.base.text.scale_alpha(0.58)),
         });
     let content = column![
         heading,
@@ -461,7 +454,7 @@ fn quantwheel_quota_card(
     let badge = container(text(badge_label).size(9))
         .padding([2, 6])
         .style(|theme: &Theme| {
-            let palette = theme.extended_palette();
+            let palette = theme.palette();
             container::Style {
                 text_color: Some(palette.primary.strong.text),
                 background: Some(Background::Color(palette.primary.strong.color)),
@@ -476,9 +469,9 @@ fn quantwheel_quota_card(
         .size(9)
         .style(move |theme: &Theme| iced::widget::text::Style {
             color: Some(if exhausted {
-                theme.extended_palette().danger.strong.color
+                theme.palette().danger.strong.color
             } else {
-                theme.extended_palette().primary.strong.color
+                theme.palette().primary.strong.color
             }),
         });
     let heading = row![
@@ -524,7 +517,7 @@ fn quantwheel_quota_card(
             text(format!("/ {}", quota.limit))
                 .size(style::text_size::SECTION)
                 .style(|theme: &Theme| iced::widget::text::Style {
-                    color: Some(theme.palette().text.scale_alpha(0.55)),
+                    color: Some(theme.palette().background.base.text.scale_alpha(0.55)),
                 }),
         );
     }
@@ -534,7 +527,7 @@ fn quantwheel_quota_card(
             text(usage_label)
                 .size(9)
                 .style(|theme: &Theme| iced::widget::text::Style {
-                    color: Some(theme.palette().text.scale_alpha(0.62)),
+                    color: Some(theme.palette().background.base.text.scale_alpha(0.62)),
                 }),
         )
         .align_y(Alignment::End);
@@ -556,7 +549,7 @@ fn quantwheel_quota_card(
             )
             .padding([5, 8])
             .style(|theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 container::Style {
                     background: Some(Background::Color(
                         palette.danger.weak.color.scale_alpha(0.24),
@@ -580,7 +573,7 @@ fn quantwheel_quota_card(
 }
 
 fn quota_segment_style(theme: &Theme, filled: bool, exhausted: bool) -> container::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let color = if filled && exhausted {
         palette.danger.strong.color
     } else if filled {
@@ -599,7 +592,7 @@ fn quota_segment_style(theme: &Theme, filled: bool, exhausted: bool) -> containe
 }
 
 fn quota_card_style(theme: &Theme, exhausted: bool) -> container::Style {
-    let palette = theme.extended_palette();
+    let palette = theme.palette();
     let accent = if exhausted {
         palette.danger.weak.color
     } else {
@@ -926,7 +919,7 @@ fn zoom_button<'a>(
         .height(15)
         .opacity(if enabled { 1.0_f32 } else { 0.38_f32 })
         .style(|theme: &Theme, _| svg::Style {
-            color: Some(theme.palette().text),
+            color: Some(theme.palette().background.base.text),
         });
     let mut control = button(icon)
         .width(24)
@@ -1189,7 +1182,7 @@ impl canvas::Program<gex::Message> for GexProfileTable<'_> {
         bounds: Rectangle,
         cursor: mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let columns = table_columns(bounds.width, self.density);
         let metrics = table_metrics(bounds.height, self.strikes.len());
@@ -1379,7 +1372,7 @@ fn draw_strike_row(
     call_wall: bool,
     put_wall: bool,
     absolute_mode: bool,
-    palette: &iced::theme::palette::Extended,
+    palette: &iced::theme::Palette,
 ) {
     let put_width = if absolute_mode {
         0.0
@@ -1503,7 +1496,7 @@ fn draw_references(
     flip: Option<f64>,
     density: GexLayoutDensity,
     band_height: f32,
-    palette: &iced::theme::palette::Extended,
+    palette: &iced::theme::Palette,
 ) {
     let spot_y = spot.and_then(|price| reference_y_for_price(price, strikes, centers));
     let flip_y = flip.and_then(|price| reference_y_for_price(price, strikes, centers));
@@ -1627,7 +1620,7 @@ fn draw_hover(
     cursor: Point,
     strike: &GexStrike,
     spot: f64,
-    palette: &iced::theme::palette::Extended,
+    palette: &iced::theme::Palette,
 ) {
     let bounds = hover_bounds(cursor, Size::new(230.0, 103.0), chart_size);
     frame.fill(

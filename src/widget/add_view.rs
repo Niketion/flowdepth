@@ -46,7 +46,7 @@ pub fn selector<'a, Message: Clone + 'a>(
     on_select: impl Fn(ContentKind) -> Message + Copy + 'a,
 ) -> Element<'a, Message> {
     let card = |kind| {
-        button(responsive(move |size| {
+        button(responsive(move |size| -> Element<'a, Message> {
             let description = ellipsize(description(kind), size.width);
             container(
                 column![
@@ -55,7 +55,7 @@ pub fn selector<'a, Message: Clone + 'a>(
                         .size(crate::style::text_size::SMALL)
                         .wrapping(iced::widget::text::Wrapping::None)
                         .style(|theme: &iced::Theme| iced::widget::text::Style {
-                            color: Some(theme.extended_palette().background.weak.text),
+                            color: Some(theme.palette().background.weak.text),
                         }),
                 ]
                 .spacing(3)

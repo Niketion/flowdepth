@@ -157,7 +157,7 @@ impl canvas::Program<Message> for AxisYLabelCanvas<'_> {
             return vec![];
         };
 
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let tick_labels = self.cache.draw(renderer, bounds.size(), |frame| {
             let row_h = self.row_h;

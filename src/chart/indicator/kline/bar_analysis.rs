@@ -255,7 +255,7 @@ impl canvas::Program<Message> for BarAnalysisCanvas<'_> {
         _cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let ctx = self.ctx;
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let geometry = self.cache.draw(renderer, bounds.size(), |frame| {
             if ctx.bounds.width == 0.0 || ctx.scaling <= f32::EPSILON {

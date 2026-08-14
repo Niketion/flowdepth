@@ -181,7 +181,7 @@ impl canvas::Program<Message> for AxisLabelsY<'_> {
         cursor: mouse::Cursor,
     ) -> Vec<Geometry> {
         let text_size = crate::style::text_size::BODY;
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let labels = self.labels_cache.draw(renderer, bounds.size(), |frame| {
             let region = self.visible_region(frame.size());
@@ -341,7 +341,7 @@ impl PriceInfoLabel {
         }
     }
 
-    pub fn get_with_color(self, palette: &iced::theme::palette::Extended) -> (Price, iced::Color) {
+    pub fn get_with_color(self, palette: &iced::theme::Palette) -> (Price, iced::Color) {
         match self {
             PriceInfoLabel::Up(p) => (p, palette.success.base.color),
             PriceInfoLabel::Down(p) => (p, palette.danger.base.color),

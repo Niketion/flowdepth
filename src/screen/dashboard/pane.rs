@@ -1,3 +1,4 @@
+use crate::widget::pick_list;
 use crate::{
     chart::{
         self, comparison::ComparisonChart, gex::GexChart, heatmap::HeatmapChart, kline::KlineChart,
@@ -47,9 +48,7 @@ use exchange::{
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme, padding,
-    widget::{
-        button, center, column, container, pane_grid, pick_list, responsive, row, text, tooltip,
-    },
+    widget::{button, center, column, container, pane_grid, responsive, row, text, tooltip},
 };
 use std::time::Instant;
 
@@ -1199,8 +1198,7 @@ impl State {
                                 if size.width < 420.0 { 1 } else { 2 },
                                 move |kind| Message::PaneEvent(id, Event::ContentSelected(kind)),
                             )))
-                            .width(Length::Fill)
-                            .max_width(620.0)
+                            .width(Length::Fill.max(620.0))
                         ]
                         .align_x(Alignment::Center)
                         .spacing(12),
@@ -2434,7 +2432,7 @@ impl State {
                     });
 
                 let content: Element<_> = container(mini_list)
-                    .max_width(260)
+                    .width(iced::Length::Fit.max(260))
                     .padding(16)
                     .style(style::chart_modal)
                     .into();
@@ -2472,7 +2470,7 @@ impl State {
                 stack_modal(
                     base,
                     container(content)
-                        .max_width(280)
+                        .width(iced::Length::Fit.max(280))
                         .padding(16)
                         .style(style::chart_modal),
                     on_blur,
@@ -3298,7 +3296,7 @@ fn link_group_modal<'a>(
     }
 
     container(grid)
-        .max_width(240)
+        .width(iced::Length::Fit.max(240))
         .padding(16)
         .style(style::chart_modal)
         .into()

@@ -502,8 +502,8 @@ impl Modifier {
 
                             numeric_input_box::<_, Message>(
                                 "Custom: ",
-                                &format!("{}-{}", TICK_COUNT_MIN, TICK_COUNT_MAX),
-                                &raw_input_buf.to_display_string(),
+                                format!("{}-{}", TICK_COUNT_MIN, TICK_COUNT_MAX),
+                                raw_input_buf.to_display_string(),
                                 is_input_valid,
                                 Message::TickCountInputChanged,
                                 tick_count_to_submit
@@ -521,7 +521,7 @@ impl Modifier {
                         scrollable::Scrollbar::new().width(4).scroller_width(4),
                     ),
                 ))
-                .max_width(240)
+                .width(iced::Length::Fit.max(240))
                 .padding(16)
                 .style(style::chart_modal)
                 .into()
@@ -571,8 +571,8 @@ impl Modifier {
 
                             numeric_input_box::<_, Message>(
                                 "Custom: ",
-                                &format!("{}-{}", TICK_MULTIPLIER_MIN, TICK_MULTIPLIER_MAX),
-                                &raw_input_buf.to_display_string(),
+                                format!("{}-{}", TICK_MULTIPLIER_MIN, TICK_MULTIPLIER_MAX),
+                                raw_input_buf.to_display_string(),
                                 is_input_valid,
                                 Message::TicksizeInputChanged,
                                 tick_multiplier_to_submit.map(Message::TicksizeSelected),
@@ -590,9 +590,7 @@ impl Modifier {
                                 text(format!("Step: {}", price_step.to_ui_string())).style(
                                     |theme: &iced::Theme| {
                                         iced::widget::text::Style {
-                                            color: Some(
-                                                theme.extended_palette().background.strongest.color,
-                                            ),
+                                            color: Some(theme.palette().background.strongest.color),
                                         }
                                     }
                                 ),
@@ -607,7 +605,7 @@ impl Modifier {
                             scrollable::Scrollbar::new().width(4).scroller_width(4),
                         ),
                     ))
-                    .max_width(240)
+                    .width(iced::Length::Fit.max(240))
                     .padding(16)
                     .style(style::chart_modal)
                     .into()

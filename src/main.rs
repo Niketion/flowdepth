@@ -34,10 +34,11 @@ use widget::{
     tooltip,
 };
 
+use crate::widget::pick_list;
 use iced::{
     Alignment, Element, Length, Subscription, Task, Theme, keyboard, padding,
     widget::{
-        button, column, container, pick_list, progress_bar, row, scrollable, text, text_input,
+        button, column, container, progress_bar, row, scrollable, text, text_input,
         tooltip::Position as TooltipPosition,
     },
 };
@@ -410,7 +411,7 @@ fn debug_log_text_style(
     level: Option<DebugLogLevel>,
 ) -> impl Fn(&iced::Theme) -> iced::widget::text::Style {
     move |theme| {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
         let color = match level {
             Some(DebugLogLevel::Error) => Some(palette.danger.base.color),
             Some(DebugLogLevel::Warn) => Some(palette.primary.strong.color),
@@ -1615,7 +1616,7 @@ impl Flowsurface {
                 self.debug_terminal_logs.clear();
             }
             Message::DebugTerminalCopyAll => {
-                return iced::clipboard::write(self.debug_terminal_logs.join("\n"));
+                return iced::clipboard::write(self.debug_terminal_logs.join("\n")).discard();
             }
             Message::DebugTerminalCopyVisible => {
                 let visible: Vec<String> = self
@@ -1623,7 +1624,7 @@ impl Flowsurface {
                     .into_iter()
                     .map(|e| e.raw)
                     .collect();
-                return iced::clipboard::write(visible.join("\n"));
+                return iced::clipboard::write(visible.join("\n")).discard();
             }
             Message::DebugTerminalSearchChanged(value) => {
                 self.debug_terminal_search = value;
@@ -2398,7 +2399,7 @@ impl Flowsurface {
             .align_x(Alignment::Center)
             .align_y(Alignment::Center)
             .style(|theme: &Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 container::Style {
                     text_color: Some(palette.danger.base.color),
                     background: Some(palette.danger.weak.color.into()),
@@ -2621,7 +2622,7 @@ impl Flowsurface {
                 text(format!(" {error_count} errors"))
                     .size(crate::style::text_size::SMALL)
                     .style(|theme: &iced::Theme| iced::widget::text::Style {
-                        color: Some(theme.extended_palette().danger.base.color),
+                        color: Some(theme.palette().danger.base.color),
                     })
             } else {
                 text("")
@@ -2630,7 +2631,7 @@ impl Flowsurface {
                 text(format!(" {warn_count} warnings"))
                     .size(crate::style::text_size::SMALL)
                     .style(|theme: &iced::Theme| iced::widget::text::Style {
-                        color: Some(theme.extended_palette().primary.strong.color),
+                        color: Some(theme.palette().primary.strong.color),
                     })
             } else {
                 text("")
@@ -3206,7 +3207,7 @@ impl Flowsurface {
 
                     container(content)
                         .align_x(Alignment::Start)
-                        .max_width(240)
+                        .width(iced::Length::Fit.max(240))
                         .padding(24)
                         .style(style::dashboard_modal)
                 };
@@ -3486,7 +3487,7 @@ fn compact_log_row(entry: DebugLogEntry) -> Element<'static, Message> {
             .font(iced::Font::MONOSPACE)
             .width(Length::Fixed(72.0))
             .style(move |theme: &iced::Theme| {
-                let palette = theme.extended_palette();
+                let palette = theme.palette();
                 let color = match category {
                     DebugLogCategory::Fetch => Some(palette.primary.strong.color),
                     DebugLogCategory::Cache => Some(palette.secondary.strong.color),

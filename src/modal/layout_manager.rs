@@ -461,7 +461,7 @@ impl LayoutManager {
 
             let styled_container = container(layout_row.align_y(iced::Alignment::Center))
                 .style(move |theme| {
-                    let palette = theme.extended_palette();
+                    let palette = theme.palette();
                     let color = if is_active {
                         palette.background.weak.color
                     } else {
@@ -600,6 +600,6 @@ fn template_svg(bytes: &'static [u8]) -> svg::Svg<'static> {
         .width(14)
         .height(14)
         .style(|theme: &Theme, _| svg::Style {
-            color: Some(theme.extended_palette().background.base.text),
+            color: Some(theme.palette().background.base.text),
         })
 }

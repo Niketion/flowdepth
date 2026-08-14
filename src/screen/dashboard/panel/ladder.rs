@@ -234,7 +234,7 @@ impl canvas::Program<Message> for Ladder {
         bounds: Rectangle,
         _cursor: iced_core::mouse::Cursor,
     ) -> Vec<iced::widget::canvas::Geometry<Renderer>> {
-        let palette = theme.extended_palette();
+        let palette = theme.palette();
 
         let text_color = palette.background.base.text;
         let bid_color = palette.success.base.color;
