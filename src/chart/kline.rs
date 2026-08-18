@@ -37,6 +37,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use std::{cell::RefCell, sync::Arc, time::Instant};
 
 mod drawing;
+pub(crate) mod smc;
 
 /// Maximum number of raw trades to retain in memory.
 /// Older trades are pruned by exchange timestamp when this cap is exceeded.
@@ -2822,6 +2823,18 @@ impl canvas::Program<Message> for KlineChart {
                             interval_to_x,
                             price_to_y,
                             &self.visual_config.vwap,
+                            palette,
+                        );
+                    }
+                    if self.indicator_enabled(KlineIndicator::SmartMoney) {
+                        self::smc::draw_smc_overlay(
+                            &self.data_source,
+                            frame,
+                            earliest,
+                            latest,
+                            interval_to_x,
+                            price_to_y,
+                            &self.visual_config.smc,
                             palette,
                         );
                     }
@@ -7091,6 +7104,19 @@ mod tests {
     fn volume_bubble_selection_is_aligned_when_chart_is_created() {
         let chart = empty_candlestick_chart(&[KlineIndicator::VolumeBubbles], None);
         assert!(chart.visual_config.volume_bubbles.enabled);
+    }
+
+    #[test]
+    fn smart_money_selection_controls_runtime_enabled_state() {
+        let mut chart = empty_candlestick_chart(&[KlineIndicator::SmartMoney], None);
+        assert!(chart.indicator_enabled(KlineIndicator::SmartMoney));
+        assert!(chart.visual_config.smc.show_swing_order_blocks);
+
+        chart.toggle_indicator(KlineIndicator::SmartMoney);
+        assert!(!chart.indicator_enabled(KlineIndicator::SmartMoney));
+
+        chart.toggle_indicator(KlineIndicator::SmartMoney);
+        assert!(chart.indicator_enabled(KlineIndicator::SmartMoney));
     }
 
     #[test]

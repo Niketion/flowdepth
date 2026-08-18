@@ -809,6 +809,8 @@ pub struct Config {
     pub session_volume_profile: SessionVolumeProfileConfig,
     /// Settings owned by the VWAP overlay indicator.
     pub vwap: VwapConfig,
+    /// Settings owned by the Smart Money Concepts overlay indicator.
+    pub smc: SmcConfig,
     /// Settings owned by the CVD panel indicator.
     pub cvd: CvdConfig,
     /// Visual settings owned by configurable indicators.
@@ -827,6 +829,7 @@ impl Default for Config {
             volume_bubbles: VolumeBubbleConfig::default(),
             session_volume_profile: SessionVolumeProfileConfig::default(),
             vwap: VwapConfig::default(),
+            smc: SmcConfig::default(),
             cvd: CvdConfig::default(),
             indicator_configs: IndicatorConfigs::default(),
             legacy_gex_levels: None,
@@ -940,6 +943,53 @@ impl Default for VwapConfig {
             show_bands: true,
             band_multiplier: 1.0,
             show_labels: true,
+        }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
+#[serde(default)]
+pub struct SmcConfig {
+    /// Lookback period for swing detection
+    pub swing_length: i32,
+    /// Display swing structure (BOS/CHoCH)
+    pub show_swing_structure: bool,
+    /// Display internal structure (smaller lookback)
+    pub show_internal_structure: bool,
+    /// Display order blocks
+    pub show_swing_order_blocks: bool,
+    pub show_internal_order_blocks: bool,
+    /// Number of order blocks to show
+    pub order_blocks_count: i32,
+    /// Display equal highs/lows
+    pub show_equal_highs_lows: bool,
+    /// Bars confirmation for equal highs/lows
+    pub equal_highs_lows_length: i32,
+    /// Sensitivity threshold for equal highs/lows
+    pub equal_highs_lows_threshold: f32,
+    /// Display fair value gaps
+    pub show_fair_value_gaps: bool,
+    /// Display premium/discount zones
+    pub show_premium_discount_zones: bool,
+    /// Display trailing strong/weak high/low
+    pub show_strong_weak_high_low: bool,
+}
+
+impl Default for SmcConfig {
+    fn default() -> Self {
+        Self {
+            swing_length: 50,
+            show_swing_structure: true,
+            show_internal_structure: true,
+            show_swing_order_blocks: true,
+            show_internal_order_blocks: true,
+            order_blocks_count: 5,
+            show_equal_highs_lows: true,
+            equal_highs_lows_length: 3,
+            equal_highs_lows_threshold: 0.1,
+            show_fair_value_gaps: false,
+            show_premium_discount_zones: false,
+            show_strong_weak_high_low: true,
         }
     }
 }

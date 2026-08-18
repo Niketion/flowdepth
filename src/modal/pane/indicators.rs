@@ -5,7 +5,7 @@ use crate::widget::{column_drag, dragger_row, labeled_slider};
 use data::chart::indicator::{Indicator, KlineIndicator, UiIndicator};
 use data::chart::kline::{
     BubbleColorMode, BubbleLabelMode, BubbleThresholdMode, Config as KlineConfig, CvdRenderStyle,
-    CvdReset, SessionProfileInterval, SessionProfileMode, SessionProfilePlacement,
+    CvdReset, SessionProfileInterval, SessionProfileMode, SessionProfilePlacement, SmcConfig,
     VolumeBubblePreset, VolumeBubbleSession,
 };
 use data::layout::pane::VisualConfig;
@@ -972,6 +972,178 @@ pub fn view_kline<'a>(
         ]
         .spacing(6);
         sections = sections.push(indicator_card("GEX Overlay", settings));
+    }
+
+    if selected.contains(&KlineIndicator::SmartMoney) {
+        let smc = cfg.smc;
+        let swing_len = labeled_slider(
+            "Swing length",
+            10.0..=200.0,
+            smc.swing_length as f32,
+            move |v| {
+                config_message(
+                    pane,
+                    KlineConfig {
+                        smc: SmcConfig {
+                            swing_length: v as i32,
+                            ..smc
+                        },
+                        ..cfg
+                    },
+                )
+            },
+            |v| format!("{v:.0}"),
+            Some(1.0),
+        );
+        let ob_count = labeled_slider(
+            "Order blocks",
+            1.0..=20.0,
+            smc.order_blocks_count as f32,
+            move |v| {
+                config_message(
+                    pane,
+                    KlineConfig {
+                        smc: SmcConfig {
+                            order_blocks_count: v as i32,
+                            ..smc
+                        },
+                        ..cfg
+                    },
+                )
+            },
+            |v| format!("{v:.0}"),
+            Some(1.0),
+        );
+        let eq_length = labeled_slider(
+            "EQ bars confirmation",
+            1.0..=10.0,
+            smc.equal_highs_lows_length as f32,
+            move |v| {
+                config_message(
+                    pane,
+                    KlineConfig {
+                        smc: SmcConfig {
+                            equal_highs_lows_length: v as i32,
+                            ..smc
+                        },
+                        ..cfg
+                    },
+                )
+            },
+            |v| format!("{v:.0}"),
+            Some(1.0),
+        );
+        let eq_threshold = labeled_slider(
+            "EQ threshold",
+            0.0..=0.5,
+            smc.equal_highs_lows_threshold,
+            move |v| {
+                config_message(
+                    pane,
+                    KlineConfig {
+                        smc: SmcConfig {
+                            equal_highs_lows_threshold: v,
+                            ..smc
+                        },
+                        ..cfg
+                    },
+                )
+            },
+            |v| format!("{v:.2}"),
+            Some(0.01),
+        );
+        let settings = column![
+            checkbox(smc.show_swing_structure)
+                .label("Swing structure")
+                .on_toggle(move |show_swing_structure| {
+                    config_message(
+                        pane,
+                        KlineConfig {
+                            smc: SmcConfig {
+                                show_swing_structure,
+                                ..smc
+                            },
+                            ..cfg
+                        },
+                    )
+                }),
+            checkbox(smc.show_swing_order_blocks)
+                .label("Swing order blocks")
+                .on_toggle(move |show_swing_order_blocks| {
+                    config_message(
+                        pane,
+                        KlineConfig {
+                            smc: SmcConfig {
+                                show_swing_order_blocks,
+                                ..smc
+                            },
+                            ..cfg
+                        },
+                    )
+                }),
+            checkbox(smc.show_equal_highs_lows)
+                .label("Equal highs/lows")
+                .on_toggle(move |show_equal_highs_lows| {
+                    config_message(
+                        pane,
+                        KlineConfig {
+                            smc: SmcConfig {
+                                show_equal_highs_lows,
+                                ..smc
+                            },
+                            ..cfg
+                        },
+                    )
+                }),
+            checkbox(smc.show_fair_value_gaps)
+                .label("Fair value gaps")
+                .on_toggle(move |show_fair_value_gaps| {
+                    config_message(
+                        pane,
+                        KlineConfig {
+                            smc: SmcConfig {
+                                show_fair_value_gaps,
+                                ..smc
+                            },
+                            ..cfg
+                        },
+                    )
+                }),
+            checkbox(smc.show_premium_discount_zones)
+                .label("Premium/discount zones")
+                .on_toggle(move |show_premium_discount_zones| {
+                    config_message(
+                        pane,
+                        KlineConfig {
+                            smc: SmcConfig {
+                                show_premium_discount_zones,
+                                ..smc
+                            },
+                            ..cfg
+                        },
+                    )
+                }),
+            checkbox(smc.show_strong_weak_high_low)
+                .label("Strong/weak high/low")
+                .on_toggle(move |show_strong_weak_high_low| {
+                    config_message(
+                        pane,
+                        KlineConfig {
+                            smc: SmcConfig {
+                                show_strong_weak_high_low,
+                                ..smc
+                            },
+                            ..cfg
+                        },
+                    )
+                }),
+            swing_len,
+            ob_count,
+            eq_length,
+            eq_threshold,
+        ]
+        .spacing(6);
+        sections = sections.push(indicator_card("Smart Money Concepts", settings));
     }
 
     container(crate::widget::scrollable_content(sections))
