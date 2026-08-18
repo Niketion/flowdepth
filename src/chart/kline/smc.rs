@@ -11,7 +11,7 @@ use data::chart::{
 };
 use exchange::{UnixMs, unit::price::Price};
 
-use iced::theme::palette::Extended;
+use iced::theme::Palette;
 use iced::{
     Color, Point,
     widget::canvas::{self, LineDash, Path, Stroke},
@@ -311,7 +311,7 @@ pub fn draw_smc_overlay(
     interval_to_x: impl Fn(u64) -> f32,
     price_to_y: impl Fn(Price) -> f32,
     config: &SmcConfig,
-    palette: &Extended,
+    palette: &Palette,
 ) {
     let klines = collect_klines(data_source, earliest, latest);
     if klines.is_empty() {
