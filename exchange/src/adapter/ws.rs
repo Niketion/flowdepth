@@ -518,30 +518,37 @@ impl WsTransport {
                         break;
                     };
 
-                    match event {
-                        ReaderEvent::Frame { opcode, payload } => {
-                            heartbeat_deadline
-                                .as_mut()
-                                .reset(Instant::now() + heartbeat.timeout);
+                    if matches!(&event, ReaderEvent::Frame { .. }) {
+                        heartbeat_deadline
+                            .as_mut()
+                            .reset(Instant::now() + heartbeat.timeout);
+                    }
 
-                            match opcode {
-                                OpCode::Text => {
-                                    if frame_tx.send(Ok(payload)).is_err() {
-                                        break;
-                                    }
-                                }
-                                OpCode::Ping => {
-                                    // `FragmentCollectorRead` has already queued the
-                                    // protocol-mandated pong through `ReaderEvent::Write`.
-                                    let _ = frame_tx.send(Ok(Vec::new()));
-                                }
-                                OpCode::Close => {
-                                    let _ = frame_tx.send(Err("Connection closed".into()));
-                                    break;
-                                }
-                                _ => {}
+                    match event {
+                        ReaderEvent::Frame {
+                            opcode: OpCode::Text,
+                            payload,
+                        } => {
+                            if frame_tx.send(Ok(payload)).is_err() {
+                                break;
                             }
                         }
+                        ReaderEvent::Frame {
+                            opcode: OpCode::Ping,
+                            ..
+                        } => {
+                            // `FragmentCollectorRead` has already queued the
+                            // protocol-mandated pong through `ReaderEvent::Write`.
+                            let _ = frame_tx.send(Ok(Vec::new()));
+                        }
+                        ReaderEvent::Frame {
+                            opcode: OpCode::Close,
+                            ..
+                        } => {
+                            let _ = frame_tx.send(Err("Connection closed".into()));
+                            break;
+                        }
+                        ReaderEvent::Frame { .. } => {}
                         ReaderEvent::Write(frame) => {
                             if let Err(error) = write_half.write_frame(frame).await {
                                 let _ = frame_tx.send(Err(format!(
