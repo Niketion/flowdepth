@@ -2,7 +2,7 @@ use crate::{
     Event, Kline, Price, PushFrequency, Ticker, TickerInfo, Timeframe, Trade, Volume,
     adapter::{
         MarketKind, StreamKind, StreamTicksize,
-        hub::{TradeBuffer, WsAdapter, WsSession, WsTransport},
+        hub::{HeartbeatPolicy, TradeBuffer, WsAdapter, WsSession, WsTransport},
     },
     depth::{DeOrder, DepthPayload, DepthUpdate, LocalDepthCache},
     serde_util::de_string_to_number,
@@ -17,9 +17,14 @@ use rustc_hash::FxHashMap;
 use serde_json::Value;
 use sonic_rs::{Deserialize, JsonValueTrait, to_object_iter_unchecked};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 const BYBIT_PING_PAYLOAD: &[u8] = br#"{"op":"ping"}"#;
+const BYBIT_HEARTBEAT: HeartbeatPolicy = HeartbeatPolicy::periodic_text(
+    BYBIT_PING_PAYLOAD,
+    Duration::from_secs(20),
+    Duration::from_secs(60),
+);
 
 #[derive(Deserialize)]
 struct SonicDepth {
@@ -247,6 +252,10 @@ struct TradeAdapter {
 }
 
 impl WsAdapter for TradeAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        BYBIT_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         let market_type = self.market_type;
         connect_and_subscribe(
@@ -355,7 +364,7 @@ pub fn connect_trade_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(BYBIT_PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }
 
 struct DepthAdapter {
@@ -369,6 +378,10 @@ struct DepthAdapter {
 }
 
 impl WsAdapter for DepthAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        BYBIT_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         let market_type = self.market_type;
         connect_and_subscribe(
@@ -496,7 +509,7 @@ pub fn connect_depth_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(BYBIT_PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }
 
 fn string_to_timeframe(interval: &str) -> Option<Timeframe> {
@@ -522,6 +535,10 @@ struct KlineAdapter {
 }
 
 impl WsAdapter for KlineAdapter {
+    fn heartbeat_policy(&self) -> HeartbeatPolicy {
+        BYBIT_HEARTBEAT
+    }
+
     async fn connect(&mut self) -> Result<WsTransport, String> {
         let market_type = self.market_type;
         connect_and_subscribe(
@@ -642,5 +659,5 @@ pub fn connect_kline_stream(
         proxy_cfg,
     };
 
-    WsSession::with_text_ping(BYBIT_PING_PAYLOAD, stream_scope).run(adapter)
+    WsSession::new(stream_scope).run(adapter)
 }

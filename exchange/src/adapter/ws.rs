@@ -4,7 +4,9 @@ use crate::unit::qty::QtyNormalization;
 use crate::{Ticker, TickerInfo, Trade, UnixMs};
 
 use bytes::Bytes;
-use fastwebsockets::{FragmentCollectorRead, Frame, OpCode, Payload, WebSocket, WebSocketError};
+use fastwebsockets::{
+    FragmentCollectorRead, Frame, OpCode, Payload, WebSocket, WebSocketError, WebSocketWrite,
+};
 use http_body_util::Empty;
 use hyper::{
     Request,
@@ -13,6 +15,7 @@ use hyper::{
 };
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use rustc_hash::FxHashMap;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::Instant;
 use tokio_rustls::{
     TlsConnector,
@@ -28,6 +31,9 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 const HEARTBEAT_SEND_FAILED_REASON: &str = "Failed to send heartbeat ping";
+const HEARTBEAT_PONG_FAILED_REASON: &str = "Failed to reply pong";
+const HEARTBEAT_TIMEOUT_REASON: &str = "Heartbeat timeout (no websocket activity)";
+
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const WS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -138,7 +144,6 @@ impl<T> Drop for ChannelStream<T> {
 
 #[derive(Clone, Debug)]
 pub(super) struct WsSession {
-    ping_payload: PingPayload,
     streams: Arc<[StreamKind]>,
 }
 
@@ -148,6 +153,13 @@ pub(super) struct WsSession {
 const ADAPTER_TICK_INTERVAL: Duration = Duration::from_micros(33_333);
 
 pub(super) trait WsAdapter {
+    /// Selects the transport heartbeat policy for this adapter.
+    ///
+    /// The session reads this policy after each successful connection. The
+    /// policy owns all venue-specific timing and wire-format decisions, while
+    /// the shared transport handles frame activity and control replies.
+    fn heartbeat_policy(&self) -> HeartbeatPolicy;
+
     /// Connects to the WebSocket and returns a transport for it.
     /// This will be retried indefinitely until it succeeds, with an exponential backoff
     /// between attempts (base ~500ms, doubling, capped at 30s, with jitter).
@@ -196,27 +208,13 @@ pub(super) trait WsAdapter {
 }
 
 impl WsSession {
-    pub(super) fn with_text_ping(ping_payload: &'static [u8], streams: Arc<[StreamKind]>) -> Self {
-        Self {
-            ping_payload: PingPayload::Text(ping_payload),
-            streams,
-        }
-    }
-
-    pub(super) fn with_opcode_ping(
-        ping_payload: &'static [u8],
-        streams: Arc<[StreamKind]>,
-    ) -> Self {
-        Self {
-            ping_payload: PingPayload::OpCode(ping_payload),
-            streams,
-        }
+    pub(super) fn new(streams: Arc<[StreamKind]>) -> Self {
+        Self { streams }
     }
 
     pub(super) fn run<A: WsAdapter + Send + 'static>(self, mut adapter: A) -> ChannelStream<Event> {
         let (mut event_tx, event_rx) = channel(512);
 
-        let ping_payload = self.ping_payload;
         let streams = Arc::clone(&self.streams);
 
         let task = tokio::spawn(async move {
@@ -257,11 +255,13 @@ impl WsSession {
                     }
                 };
 
+                let heartbeat_policy = adapter.heartbeat_policy();
+
                 let (frame_tx, mut frame_rx) = {
                     let (tx, rx) = futures::channel::mpsc::unbounded();
                     (AnySender::Unbounded(tx), AnyReceiver::Unbounded(rx))
                 };
-                let io_handle = tokio::spawn(transport.read_frame(ping_payload, frame_tx));
+                let io_handle = tokio::spawn(transport.read_frame(heartbeat_policy, frame_tx));
 
                 for event in adapter.on_connected().await {
                     let _ = event_tx.send(event);
@@ -426,163 +426,446 @@ impl WsSession {
     }
 }
 
-pub(super) struct WsTransport(WebSocket<TokioIo<Upgraded>>);
-
-enum ReaderEvent {
-    Frame { opcode: OpCode, payload: Vec<u8> },
-    Write(Frame<'static>),
-    Error(String),
+/// Wire representation for an outbound heartbeat payload.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PingPayload {
+    /// An application-level text message.
+    Text(&'static [u8]),
+    /// A WebSocket control Ping frame.
+    OpCode(&'static [u8]),
 }
 
-impl WsTransport {
-    pub(super) async fn write_frame(&mut self, frame: Frame<'_>) -> Result<(), WebSocketError> {
-        self.0.write_frame(frame).await
+/// Transport-level keepalive strategy for a WebSocket adapter.
+///
+/// Activity is recorded for every complete inbound frame, including control
+/// frames. The policy determines when the connection sends a heartbeat and
+/// when a lack of inbound activity is treated as a dead connection.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum HeartbeatPolicy {
+    /// Send an application or control ping at a fixed cadence.
+    ///
+    /// The next ping is scheduled after the previous write succeeds. The
+    /// connection is closed when no complete inbound frame arrives within
+    /// `silence_timeout`.
+    PeriodicClientPing {
+        ping: PingPayload,
+        every: Duration,
+        silence_timeout: Duration,
+    },
+    /// Send one application-level ping after inbound traffic has been idle.
+    ///
+    /// A complete inbound frame returns the policy to idle monitoring. After
+    /// a ping is written, the connection waits `response_timeout` for any
+    /// complete inbound frame before closing.
+    PingAfterIdle {
+        ping: PingPayload,
+        idle_for: Duration,
+        response_timeout: Duration,
+    },
+    /// Rely on protocol-level pings sent by the server.
+    ///
+    /// The transport still replies to incoming WebSocket Ping frames, but it
+    /// never sends a proactive heartbeat.
+    ServerDriven { silence_timeout: Duration },
+}
+
+impl HeartbeatPolicy {
+    /// Creates a [`PeriodicClientPing`](HeartbeatPolicy::PeriodicClientPing) policy
+    /// that sends an application-level text ping.
+    pub(super) const fn periodic_text(
+        payload: &'static [u8],
+        every: Duration,
+        silence_timeout: Duration,
+    ) -> Self {
+        Self::PeriodicClientPing {
+            ping: PingPayload::Text(payload),
+            every,
+            silence_timeout,
+        }
     }
 
+    /// Creates a [`PeriodicClientPing`](HeartbeatPolicy::PeriodicClientPing) policy
+    /// that sends a WebSocket control Ping frame.
+    #[allow(dead_code)]
+    pub(crate) const fn periodic_opcode(
+        payload: &'static [u8],
+        every: Duration,
+        silence_timeout: Duration,
+    ) -> Self {
+        Self::PeriodicClientPing {
+            ping: PingPayload::OpCode(payload),
+            every,
+            silence_timeout,
+        }
+    }
+
+    /// Creates a [`PingAfterIdle`](HeartbeatPolicy::PingAfterIdle) policy
+    /// that sends an application-level text ping.
+    pub(super) const fn ping_after_idle_text(
+        payload: &'static [u8],
+        idle_for: Duration,
+        response_timeout: Duration,
+    ) -> Self {
+        Self::PingAfterIdle {
+            ping: PingPayload::Text(payload),
+            idle_for,
+            response_timeout,
+        }
+    }
+
+    /// Creates a [`ServerDriven`](HeartbeatPolicy::ServerDriven) policy
+    /// that only observes server-driven activity.
+    pub(super) const fn server_driven(silence_timeout: Duration) -> Self {
+        Self::ServerDriven { silence_timeout }
+    }
+}
+
+enum HeartbeatState {
+    Periodic { next_ping: Instant },
+    IdleMonitoring,
+    IdleAwaitingResponse { deadline: Instant },
+    ServerDriven,
+}
+
+enum HeartbeatAction {
+    SendPing(PingPayload),
+    Timeout,
+    Wait,
+}
+
+struct WsHeartbeat {
+    policy: HeartbeatPolicy,
+    last_activity: Instant,
+    state: HeartbeatState,
+}
+
+impl WsHeartbeat {
+    fn new(policy: HeartbeatPolicy, now: Instant) -> Self {
+        let state = match policy {
+            HeartbeatPolicy::PeriodicClientPing { every, .. } => HeartbeatState::Periodic {
+                next_ping: now + every,
+            },
+            HeartbeatPolicy::PingAfterIdle { .. } => HeartbeatState::IdleMonitoring,
+            HeartbeatPolicy::ServerDriven { .. } => HeartbeatState::ServerDriven,
+        };
+
+        Self {
+            policy,
+            last_activity: now,
+            state,
+        }
+    }
+
+    fn next_deadline(&self) -> Instant {
+        match (self.policy, &self.state) {
+            (
+                HeartbeatPolicy::PeriodicClientPing {
+                    silence_timeout, ..
+                },
+                HeartbeatState::Periodic { next_ping },
+            ) => (self.last_activity + silence_timeout).min(*next_ping),
+            (HeartbeatPolicy::PingAfterIdle { idle_for, .. }, HeartbeatState::IdleMonitoring) => {
+                self.last_activity + idle_for
+            }
+            (
+                HeartbeatPolicy::PingAfterIdle { .. },
+                HeartbeatState::IdleAwaitingResponse { deadline },
+            ) => *deadline,
+            (HeartbeatPolicy::ServerDriven { silence_timeout }, HeartbeatState::ServerDriven) => {
+                self.last_activity + silence_timeout
+            }
+            (
+                HeartbeatPolicy::PeriodicClientPing {
+                    silence_timeout, ..
+                },
+                _,
+            ) => self.last_activity + silence_timeout,
+            (HeartbeatPolicy::PingAfterIdle { idle_for, .. }, _) => self.last_activity + idle_for,
+            (HeartbeatPolicy::ServerDriven { silence_timeout }, _) => {
+                self.last_activity + silence_timeout
+            }
+        }
+    }
+
+    fn deadline_action(&self, now: Instant) -> HeartbeatAction {
+        match (self.policy, &self.state) {
+            (
+                HeartbeatPolicy::PeriodicClientPing {
+                    ping,
+                    silence_timeout,
+                    ..
+                },
+                HeartbeatState::Periodic { next_ping },
+            ) => {
+                if now >= self.last_activity + silence_timeout {
+                    HeartbeatAction::Timeout
+                } else if now >= *next_ping {
+                    HeartbeatAction::SendPing(ping)
+                } else {
+                    HeartbeatAction::Wait
+                }
+            }
+            (
+                HeartbeatPolicy::PingAfterIdle { ping, idle_for, .. },
+                HeartbeatState::IdleMonitoring,
+            ) => {
+                if now >= self.last_activity + idle_for {
+                    HeartbeatAction::SendPing(ping)
+                } else {
+                    HeartbeatAction::Wait
+                }
+            }
+            (
+                HeartbeatPolicy::PingAfterIdle { .. },
+                HeartbeatState::IdleAwaitingResponse { deadline },
+            ) => {
+                if now >= *deadline {
+                    HeartbeatAction::Timeout
+                } else {
+                    HeartbeatAction::Wait
+                }
+            }
+            (HeartbeatPolicy::ServerDriven { silence_timeout }, HeartbeatState::ServerDriven) => {
+                if now >= self.last_activity + silence_timeout {
+                    HeartbeatAction::Timeout
+                } else {
+                    HeartbeatAction::Wait
+                }
+            }
+            _ => HeartbeatAction::Wait,
+        }
+    }
+
+    fn mark_activity(&mut self, now: Instant) {
+        self.last_activity = now;
+        if matches!(self.state, HeartbeatState::IdleAwaitingResponse { .. }) {
+            self.state = HeartbeatState::IdleMonitoring;
+        }
+    }
+
+    fn record_ping_sent(&mut self, now: Instant) {
+        match (self.policy, &self.state) {
+            (
+                HeartbeatPolicy::PeriodicClientPing { every, .. },
+                HeartbeatState::Periodic { .. },
+            ) => {
+                self.state = HeartbeatState::Periodic {
+                    next_ping: now + every,
+                };
+            }
+            (
+                HeartbeatPolicy::PingAfterIdle {
+                    response_timeout, ..
+                },
+                HeartbeatState::IdleMonitoring,
+            ) => {
+                self.state = HeartbeatState::IdleAwaitingResponse {
+                    deadline: now + response_timeout,
+                };
+            }
+            _ => {}
+        }
+    }
+}
+
+struct WsConnection<R, W> {
+    reader: FragmentCollectorRead<R>,
+    writer: WebSocketWrite<W>,
+    heartbeat: WsHeartbeat,
+    frame_tx: AnySender<Result<Vec<u8>, String>>,
+}
+
+impl<R, W> WsConnection<R, W>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    fn new(
+        reader: FragmentCollectorRead<R>,
+        writer: WebSocketWrite<W>,
+        heartbeat_policy: HeartbeatPolicy,
+        frame_tx: AnySender<Result<Vec<u8>, String>>,
+    ) -> Self {
+        Self {
+            reader,
+            writer,
+            heartbeat: WsHeartbeat::new(heartbeat_policy, Instant::now()),
+            frame_tx,
+        }
+    }
+
+    async fn run(self) {
+        let Self {
+            mut reader,
+            mut writer,
+            mut heartbeat,
+            mut frame_tx,
+        } = self;
+
+        loop {
+            let mut no_control_send =
+                |_frame: Frame<'_>| std::future::ready(Ok::<(), std::io::Error>(()));
+            let mut read_future = Box::pin(reader.read_frame(&mut no_control_send));
+
+            let outcome = loop {
+                let deadline = heartbeat.next_deadline();
+
+                tokio::select! {
+                    biased;
+                    result = &mut read_future => break Ok(result),
+                    _ = tokio::time::sleep_until(deadline) => {
+                        if let Err(reason) = apply_heartbeat_action(&mut heartbeat, &mut writer).await {
+                            break Err(reason);
+                        }
+                    }
+                }
+            };
+
+            drop(read_future);
+
+            let message = match outcome {
+                Ok(Ok(message)) => message,
+                Ok(Err(error)) => {
+                    let _ = frame_tx.send(Err(format!("Error reading frame: {error}")));
+                    break;
+                }
+                Err(reason) => {
+                    let _ = frame_tx.send(Err(reason.to_string()));
+                    break;
+                }
+            };
+
+            heartbeat.mark_activity(Instant::now());
+
+            let keep_connection = match message.opcode {
+                OpCode::Text => {
+                    let payload = Vec::from(&message.payload[..]);
+                    frame_tx.send(Ok(payload)).is_ok()
+                }
+                OpCode::Ping => {
+                    let payload = Vec::from(message.payload);
+                    if writer
+                        .write_frame(Frame::pong(Payload::Owned(payload)))
+                        .await
+                        .is_err()
+                    {
+                        let _ = frame_tx.send(Err(HEARTBEAT_PONG_FAILED_REASON.into()));
+                        false
+                    } else {
+                        frame_tx.send(Ok(Vec::new())).is_ok()
+                    }
+                }
+                OpCode::Close => {
+                    let payload = Vec::from(message.payload);
+                    let close_reason = format_close_frame_reason(&payload);
+                    let _ = writer
+                        .write_frame(Frame::close_raw(Payload::Owned(payload)))
+                        .await;
+                    let _ = frame_tx.send(Err(close_reason));
+                    false
+                }
+                _ => true,
+            };
+
+            if !keep_connection {
+                break;
+            }
+
+            if let Err(reason) = apply_heartbeat_action(&mut heartbeat, &mut writer).await {
+                let _ = frame_tx.send(Err(reason.to_string()));
+                break;
+            }
+        }
+    }
+}
+
+async fn apply_heartbeat_action<W>(
+    heartbeat: &mut WsHeartbeat,
+    writer: &mut WebSocketWrite<W>,
+) -> Result<(), &'static str>
+where
+    W: AsyncWrite + Unpin,
+{
+    match heartbeat.deadline_action(Instant::now()) {
+        HeartbeatAction::SendPing(ping) => {
+            write_heartbeat_ping(writer, ping)
+                .await
+                .map_err(|_| HEARTBEAT_SEND_FAILED_REASON)?;
+            heartbeat.record_ping_sent(Instant::now());
+            Ok(())
+        }
+        HeartbeatAction::Timeout => Err(HEARTBEAT_TIMEOUT_REASON),
+        HeartbeatAction::Wait => Ok(()),
+    }
+}
+
+async fn write_heartbeat_ping<W>(
+    writer: &mut WebSocketWrite<W>,
+    ping_payload: PingPayload,
+) -> Result<(), WebSocketError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let frame = match ping_payload {
+        PingPayload::Text(payload) => Frame::text(Payload::Borrowed(payload)),
+        PingPayload::OpCode(payload) => {
+            Frame::new(true, OpCode::Ping, None, Payload::Borrowed(payload))
+        }
+    };
+
+    writer.write_frame(frame).await
+}
+
+fn format_close_frame_reason(payload: &[u8]) -> String {
+    const MAX_CLOSE_REASON_CHARS: usize = 512;
+    match payload {
+        [] => "Connection closed by peer: no status code or reason".to_string(),
+        [_] => "Connection closed by peer: invalid close payload (one byte)".to_string(),
+        [code_high, code_low, reason @ ..] => {
+            let code = u16::from_be_bytes([*code_high, *code_low]);
+            let close_code = fastwebsockets::CloseCode::from(code);
+            let reason = match std::str::from_utf8(reason) {
+                Ok("") => "no reason".to_string(),
+                Ok(reason) => {
+                    let mut chars = reason.chars();
+                    let preview: String = chars.by_ref().take(MAX_CLOSE_REASON_CHARS).collect();
+                    let suffix = if chars.next().is_some() {
+                        " (truncated)"
+                    } else {
+                        ""
+                    };
+                    format!("reason={preview:?}{suffix}")
+                }
+                Err(_) => format!("reason=<invalid UTF-8, {} bytes>", reason.len()),
+            };
+
+            format!("Connection closed by peer: code={code} ({close_code:?}), {reason}")
+        }
+    }
+}
+
+pub(super) struct WsTransport(WebSocket<TokioIo<Upgraded>>);
+
+impl WsTransport {
     /// Reads frames, handles heartbeat and Ping/Pong at transport level,
     /// forwards text frames to the processor task.
     async fn read_frame(
         self,
-        ping_payload: PingPayload,
-        mut frame_tx: AnySender<Result<Vec<u8>, String>>,
+        heartbeat_policy: HeartbeatPolicy,
+        frame_tx: AnySender<Result<Vec<u8>, String>>,
     ) {
-        // `fastwebsockets::read_frame` is not cancellation-safe: it may have
-        // consumed part of a frame when its future is dropped. Wrapping it in
-        // `timeout` used to cancel an in-progress read every heartbeat tick,
-        // desynchronizing the parser under busy depth/trade streams. The next
-        // payload byte was then interpreted as a frame header and commonly
-        // failed with "Reserved bits are not zero".
-        //
-        // Keep the reader future in its own task for the whole connection and
-        // use the split write half for heartbeat and protocol replies.
-        let (read_half, mut write_half) = self.0.split(tokio::io::split);
-        let mut reader = FragmentCollectorRead::new(read_half);
-        let (reader_tx, mut reader_rx) = tokio::sync::mpsc::unbounded_channel();
-        let reader_task = tokio::spawn(async move {
-            loop {
-                let obligated_tx = reader_tx.clone();
-                let result = reader
-                    .read_frame(&mut move |frame| {
-                        let tx = obligated_tx.clone();
-                        let owned = Frame::new(
-                            frame.fin,
-                            frame.opcode,
-                            None,
-                            Payload::Owned(frame.payload.to_vec()),
-                        );
-                        async move {
-                            tx.send(ReaderEvent::Write(owned)).map_err(|_| {
-                                std::io::Error::new(
-                                    std::io::ErrorKind::BrokenPipe,
-                                    "websocket writer task exited",
-                                )
-                            })
-                        }
-                    })
-                    .await;
+        let (mut reader, writer) = self.0.split(tokio::io::split);
+        reader.set_auto_pong(false);
+        reader.set_auto_close(false);
 
-                match result {
-                    Ok(frame) => {
-                        if reader_tx
-                            .send(ReaderEvent::Frame {
-                                opcode: frame.opcode,
-                                payload: frame.payload.to_vec(),
-                            })
-                            .is_err()
-                        {
-                            break;
-                        }
-                    }
-                    Err(error) => {
-                        let _ = reader_tx
-                            .send(ReaderEvent::Error(format!("Error reading frame: {error}")));
-                        break;
-                    }
-                }
-            }
-        });
+        let reader = FragmentCollectorRead::new(reader);
+        WsConnection::new(reader, writer, heartbeat_policy, frame_tx)
+            .run()
+            .await;
+    }
 
-        let heartbeat = WsHeartbeat::default();
-        let mut heartbeat_interval =
-            tokio::time::interval_at(Instant::now() + heartbeat.interval, heartbeat.interval);
-        heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let heartbeat_deadline = tokio::time::sleep(heartbeat.timeout);
-        tokio::pin!(heartbeat_deadline);
-
-        loop {
-            tokio::select! {
-                biased;
-                event = reader_rx.recv() => {
-                    let Some(event) = event else {
-                        let _ = frame_tx.send(Err("I/O task exited".into()));
-                        break;
-                    };
-
-                    if matches!(&event, ReaderEvent::Frame { .. }) {
-                        heartbeat_deadline
-                            .as_mut()
-                            .reset(Instant::now() + heartbeat.timeout);
-                    }
-
-                    match event {
-                        ReaderEvent::Frame {
-                            opcode: OpCode::Text,
-                            payload,
-                        } => {
-                            if frame_tx.send(Ok(payload)).is_err() {
-                                break;
-                            }
-                        }
-                        ReaderEvent::Frame {
-                            opcode: OpCode::Ping,
-                            ..
-                        } => {
-                            // `FragmentCollectorRead` has already queued the
-                            // protocol-mandated pong through `ReaderEvent::Write`.
-                            let _ = frame_tx.send(Ok(Vec::new()));
-                        }
-                        ReaderEvent::Frame {
-                            opcode: OpCode::Close,
-                            ..
-                        } => {
-                            let _ = frame_tx.send(Err("Connection closed".into()));
-                            break;
-                        }
-                        ReaderEvent::Frame { .. } => {}
-                        ReaderEvent::Write(frame) => {
-                            if let Err(error) = write_half.write_frame(frame).await {
-                                let _ = frame_tx.send(Err(format!(
-                                    "Failed to write websocket control frame: {error}"
-                                )));
-                                break;
-                            }
-                        }
-                        ReaderEvent::Error(error) => {
-                            let _ = frame_tx.send(Err(error));
-                            break;
-                        }
-                    }
-                }
-                _ = heartbeat_interval.tick() => {
-                    let frame = match ping_payload {
-                        PingPayload::Text(payload) => Frame::text(Payload::Borrowed(payload)),
-                        PingPayload::OpCode(payload) => {
-                            Frame::new(true, OpCode::Ping, None, Payload::Borrowed(payload))
-                        }
-                    };
-                    if write_half.write_frame(frame).await.is_err() {
-                        let _ = frame_tx.send(Err(HEARTBEAT_SEND_FAILED_REASON.into()));
-                        break;
-                    }
-                }
-                _ = &mut heartbeat_deadline => {
-                    let _ = frame_tx.send(Err("Heartbeat timeout (no websocket activity)".into()));
-                    break;
-                }
-            }
-        }
-
-        reader_task.abort();
+    pub(super) async fn write_frame(&mut self, frame: Frame<'_>) -> Result<(), WebSocketError> {
+        self.0.write_frame(frame).await
     }
 
     pub(super) async fn establish(
@@ -718,35 +1001,6 @@ impl WsTransport {
             .header("Sec-WebSocket-Version", "13")
             .body(Empty::<Bytes>::new())
             .map_err(|e| AdapterError::WebsocketError(e.to_string()))
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-enum PingPayload {
-    Text(&'static [u8]),
-    OpCode(&'static [u8]),
-}
-
-struct WsHeartbeat {
-    interval: Duration,
-    timeout: Duration,
-}
-
-impl WsHeartbeat {
-    const DEFAULT_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
-    const DEFAULT_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
-
-    fn new(interval: Duration, timeout: Duration) -> Self {
-        Self { interval, timeout }
-    }
-}
-
-impl Default for WsHeartbeat {
-    fn default() -> Self {
-        Self::new(
-            Self::DEFAULT_HEARTBEAT_INTERVAL,
-            Self::DEFAULT_HEARTBEAT_TIMEOUT,
-        )
     }
 }
 
