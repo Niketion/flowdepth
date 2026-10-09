@@ -1313,6 +1313,55 @@ impl Flowsurface {
                             ));
                         }
                     }
+                    Some(modal::layout_manager::Action::CloneForMarket { source, ticker }) => {
+                        let Some(mut copied) = self
+                            .layout_manager
+                            .get(source)
+                            .map(|layout| data::Dashboard::from(&layout.dashboard))
+                        else {
+                            return Task::none();
+                        };
+                        let btc_reference = self
+                            .sidebar
+                            .tickers_info()
+                            .values()
+                            .filter_map(|info| *info)
+                            .filter(|info| {
+                                exchange::options::resolve_options_underlying(info.ticker)
+                                    == Some(exchange::options::OptionsUnderlying::Btc)
+                            })
+                            .min_by_key(|info| {
+                                let (symbol, _) = info.ticker.display_symbol_and_type();
+                                (
+                                    info.exchange() != ticker.exchange(),
+                                    symbol != "BTCUSDT",
+                                    symbol,
+                                )
+                            });
+                        let used_gex_fallback =
+                            layout::retarget_dashboard(&mut copied, ticker, btc_reference);
+                        let id = uuid::Uuid::new_v4();
+                        let (symbol, _) = ticker.ticker.display_symbol_and_type();
+                        let name = self.layout_manager.ensure_unique_name(&symbol, id);
+                        let dashboard = layout::dashboard_from_data(copied, id);
+                        self.layout_manager.insert_layout(
+                            LayoutId {
+                                unique: id,
+                                name: name.clone(),
+                            },
+                            dashboard,
+                        );
+                        self.notifications.push(Toast::info(if used_gex_fallback {
+                            format!(
+                                "Created {name} from the current dashboard. GEX defaults to BTC."
+                            )
+                        } else {
+                            format!("Created {name} from the current dashboard")
+                        }));
+                        return Task::done(Message::Layouts(
+                            modal::layout_manager::Message::SelectActive(id),
+                        ));
+                    }
                     Some(modal::layout_manager::Action::Overwrite { source, target }) => {
                         let dashboard = self
                             .layout_manager
@@ -2608,10 +2657,18 @@ impl Flowsurface {
             }
             sidebar::Menu::Layout => {
                 let manage_layout_modal = {
-                    container(self.layout_manager.view().map(Message::Layouts))
-                        .width(260)
-                        .padding(24)
-                        .style(style::dashboard_modal)
+                    container(
+                        self.layout_manager
+                            .view(&self.sidebar.tickers_table)
+                            .map(Message::Layouts),
+                    )
+                    .width(if self.layout_manager.is_selecting_market() {
+                        420
+                    } else {
+                        260
+                    })
+                    .padding(24)
+                    .style(style::dashboard_modal)
                 };
 
                 let (align_x, padding) = match sidebar_pos {

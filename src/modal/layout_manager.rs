@@ -1,5 +1,7 @@
 use crate::layout::{Layout, LayoutId};
+use crate::modal::pane::mini_tickers_list::{self, MiniPanel, RowSelection};
 use crate::screen::dashboard::Dashboard;
+use crate::screen::dashboard::tickers_table::TickersTable;
 use crate::style::{Icon, icon_text};
 use crate::widget::column_drag::{self, DragEvent};
 use crate::widget::dragger_row;
@@ -29,6 +31,8 @@ pub enum Message {
     AddLayout,
     ToggleAddMenu,
     SaveCurrentAsNew,
+    ToggleMarketPicker,
+    MarketPicker(mini_tickers_list::Message),
     RequestOverwrite(Uuid),
     ConfirmOverwrite(Uuid),
     CancelOverwrite,
@@ -43,7 +47,14 @@ pub enum Message {
 pub enum Action {
     Select(Uuid),
     Clone(Uuid),
-    Overwrite { source: Uuid, target: Uuid },
+    CloneForMarket {
+        source: Uuid,
+        ticker: exchange::TickerInfo,
+    },
+    Overwrite {
+        source: Uuid,
+        target: Uuid,
+    },
     Export(Uuid),
     Import,
 }
@@ -54,6 +65,7 @@ pub struct LayoutManager {
     pub edit_mode: Editing,
     add_menu_open: bool,
     overwrite_target: Option<Uuid>,
+    market_picker: Option<MiniPanel>,
 }
 
 impl LayoutManager {
@@ -72,6 +84,7 @@ impl LayoutManager {
             edit_mode: Editing::None,
             add_menu_open: false,
             overwrite_target: None,
+            market_picker: None,
         }
     }
 
@@ -82,6 +95,7 @@ impl LayoutManager {
             edit_mode: Editing::None,
             add_menu_open: false,
             overwrite_target: None,
+            market_picker: None,
         }
     }
 
@@ -121,17 +135,20 @@ impl LayoutManager {
     }
 
     pub fn ensure_unique_name(&self, proposed: &str, current_id: Uuid) -> String {
-        let mut final_name = proposed.to_string();
+        let base: String = proposed.chars().take(20).collect();
+        let mut final_name = base.clone();
         let mut suffix = 2;
         while self
             .layouts
             .iter()
             .any(|layout| layout.id.unique != current_id && layout.id.name == final_name)
         {
-            final_name = format!("{proposed} ({suffix})");
+            let ending = format!(" ({suffix})");
+            let prefix: String = base.chars().take(20 - ending.chars().count()).collect();
+            final_name = format!("{prefix}{ending}");
             suffix += 1;
         }
-        final_name.chars().take(20).collect()
+        final_name
     }
 
     pub fn iter_dashboards_mut(&mut self) -> impl Iterator<Item = &mut Dashboard> {
@@ -164,12 +181,13 @@ impl LayoutManager {
             Message::SelectActive(id) => {
                 self.add_menu_open = false;
                 self.overwrite_target = None;
-                self.active_layout_id = Some(id);
+                self.market_picker = None;
                 return Some(Action::Select(id));
             }
             Message::ToggleEditMode(new_mode) => {
                 self.add_menu_open = false;
                 self.overwrite_target = None;
+                self.market_picker = None;
                 match (&new_mode, &self.edit_mode) {
                     (Editing::Preview, Editing::Preview) => {
                         self.edit_mode = Editing::None;
@@ -200,7 +218,26 @@ impl LayoutManager {
             Message::ToggleAddMenu => {
                 self.add_menu_open = !self.add_menu_open;
                 self.overwrite_target = None;
+                self.market_picker = None;
                 self.edit_mode = Editing::None;
+            }
+            Message::ToggleMarketPicker => {
+                self.market_picker = if self.market_picker.is_some() {
+                    None
+                } else {
+                    Some(MiniPanel::new())
+                };
+                self.overwrite_target = None;
+            }
+            Message::MarketPicker(message) => {
+                if let Some(mini_tickers_list::Action::RowSelected(RowSelection::Switch(ticker))) =
+                    self.market_picker.as_mut()?.update(message)
+                {
+                    let source = self.active_layout_id?;
+                    self.market_picker = None;
+                    self.add_menu_open = false;
+                    return Some(Action::CloneForMarket { source, ticker });
+                }
             }
             Message::SaveCurrentAsNew => {
                 self.add_menu_open = false;
@@ -267,7 +304,11 @@ impl LayoutManager {
         None
     }
 
-    pub fn view(&self) -> Element<'_, Message> {
+    pub fn is_selecting_market(&self) -> bool {
+        self.add_menu_open && self.market_picker.is_some()
+    }
+
+    pub fn view<'a>(&'a self, tickers: &'a TickersTable) -> Element<'a, Message> {
         let mut content = column![].spacing(8);
 
         let is_edit_mode = self.edit_mode != Editing::None;
@@ -305,7 +346,26 @@ impl LayoutManager {
             }
         ]);
 
-        if self.add_menu_open {
+        if self.add_menu_open
+            && let Some(picker) = &self.market_picker
+        {
+            content = content.push(
+                container(
+                    column![
+                        text("New layout for another market")
+                            .size(crate::style::text_size::SECTION),
+                        text("Choose a market to copy the current dashboard. GEX defaults to BTC when the market is unsupported.")
+                            .size(crate::style::text_size::SMALL),
+                        container(picker.view(tickers, None, None).map(Message::MarketPicker))
+                            .height(260),
+                        button("Back").on_press(Message::ToggleMarketPicker),
+                    ]
+                    .spacing(8),
+                )
+                .padding(8)
+                .style(style::modal_container),
+            );
+        } else if self.add_menu_open {
             let active = self.active_layout_id;
             let mut save_targets = column![].spacing(4);
             for layout in self
@@ -352,6 +412,12 @@ impl LayoutManager {
                     )
                     .width(iced::Length::Fill)
                     .on_press(Message::SaveCurrentAsNew),
+                    button(
+                        row![icon_text(Icon::Clone, 12), text("Copy for another market")]
+                            .spacing(8)
+                    )
+                    .width(iced::Length::Fill)
+                    .on_press(Message::ToggleMarketPicker),
                     button(
                         row![
                             template_svg(include_bytes!("../../assets/ui/template-export.svg")),
@@ -602,4 +668,71 @@ fn template_svg(bytes: &'static [u8]) -> svg::Svg<'static> {
         .style(|theme: &Theme, _| svg::Style {
             color: Some(theme.palette().background.base.text),
         })
+}
+
+#[cfg(test)]
+mod market_layout_tests {
+    use super::*;
+    use exchange::{Ticker, TickerInfo, adapter::Exchange};
+
+    #[test]
+    fn choosing_market_clones_active_layout_without_mutating_source() {
+        let mut manager = LayoutManager::new();
+        let source = manager.active_layout_id().unwrap().unique;
+        let sol = TickerInfo::new(
+            Ticker::new("SOLUSDT", Exchange::BinanceLinear),
+            0.01,
+            0.001,
+            None,
+        );
+        manager.update(Message::ToggleAddMenu);
+        manager.update(Message::ToggleMarketPicker);
+        assert!(manager.is_selecting_market());
+        manager.update(Message::MarketPicker(
+            mini_tickers_list::Message::SearchChanged("SOLUSDT".into()),
+        ));
+        let action = manager.update(Message::MarketPicker(
+            mini_tickers_list::Message::RowSelected(RowSelection::Switch(sol)),
+        ));
+        assert!(
+            matches!(action, Some(Action::CloneForMarket { source: id, ticker }) if id == source && ticker == sol)
+        );
+        assert_eq!(manager.layouts.len(), 1);
+        assert_eq!(manager.active_layout_id().unwrap().unique, source);
+        assert!(!manager.is_selecting_market());
+        assert!(!manager.add_menu_open);
+    }
+
+    #[test]
+    fn switching_layout_keeps_previous_active_until_application_loads_new_layout() {
+        let mut manager = LayoutManager::new();
+        let source = manager.active_layout_id().unwrap().unique;
+        let new_id = Uuid::new_v4();
+        manager.insert_layout(
+            LayoutId {
+                unique: new_id,
+                name: "SOLUSDT".into(),
+            },
+            Dashboard::empty(new_id),
+        );
+        assert!(
+            matches!(manager.update(Message::SelectActive(new_id)), Some(Action::Select(id)) if id == new_id)
+        );
+        assert_eq!(manager.active_layout_id().unwrap().unique, source);
+        manager.set_active_layout(new_id).unwrap();
+        assert_eq!(manager.active_layout_id().unwrap().unique, new_id);
+    }
+
+    #[test]
+    fn repeated_long_market_names_remain_unique_within_name_limit() {
+        let mut manager = LayoutManager::new();
+        let symbol = "SOMEMARKETWITHALONGSYMBOLUSDT";
+        for _ in 0..3 {
+            let id = Uuid::new_v4();
+            let name = manager.ensure_unique_name(symbol, id);
+            assert!(name.chars().count() <= 20);
+            assert!(!manager.layouts.iter().any(|layout| layout.id.name == name));
+            manager.insert_layout(LayoutId { unique: id, name }, Dashboard::empty(id));
+        }
+    }
 }

@@ -156,6 +156,189 @@ pub fn dashboard_from_data(dashboard: data::Dashboard, layout_id: Uuid) -> Dashb
     Dashboard::from_config(configuration(dashboard.pane), popout_windows, layout_id)
 }
 
+/// Retarget a copied layout without carrying market data or price drawings from
+/// the source market. Returns whether any GEX pane needed the BTC fallback.
+pub fn retarget_dashboard(
+    dashboard: &mut data::Dashboard,
+    market: exchange::TickerInfo,
+    btc_reference: Option<exchange::TickerInfo>,
+) -> bool {
+    fn retarget_pane(
+        pane: &mut data::Pane,
+        market: exchange::TickerInfo,
+        btc_reference: Option<exchange::TickerInfo>,
+    ) -> bool {
+        use data::layout::pane::{ContentKind, PaneSetup, VisualConfig};
+        use exchange::options::{OptionsUnderlying, resolve_gex_source};
+
+        let content_kind = match pane {
+            data::Pane::HeatmapChart { .. } => ContentKind::HeatmapChart,
+            data::Pane::ShaderHeatmap { .. } => ContentKind::ShaderHeatmap,
+            data::Pane::KlineChart {
+                kind: data::chart::KlineChartKind::Footprint { .. },
+                ..
+            } => ContentKind::FootprintChart,
+            data::Pane::KlineChart { .. } => ContentKind::CandlestickChart,
+            data::Pane::ComparisonChart { .. } => ContentKind::ComparisonChart,
+            data::Pane::TimeAndSales { .. } => ContentKind::TimeAndSales,
+            data::Pane::Ladder { .. } => ContentKind::Ladder,
+            _ => ContentKind::Starter,
+        };
+        let (streams, settings) = match pane {
+            data::Pane::Split { a, b, .. } => {
+                let a_fallback = retarget_pane(a, market, btc_reference);
+                let b_fallback = retarget_pane(b, market, btc_reference);
+                return a_fallback || b_fallback;
+            }
+            data::Pane::Starter { .. } => return false,
+            data::Pane::GexChart {
+                underlying,
+                liquidity_reference,
+                ..
+            } => {
+                if let Some(source) = resolve_gex_source(market.ticker) {
+                    *underlying = source.source_underlying();
+                    *liquidity_reference = Some(market);
+                    return false;
+                }
+                *underlying = OptionsUnderlying::Btc;
+                *liquidity_reference = liquidity_reference
+                    .filter(|reference| {
+                        resolve_gex_source(reference.ticker).is_some_and(|source| {
+                            source.source_underlying() == OptionsUnderlying::Btc
+                        })
+                    })
+                    .or(btc_reference);
+                return true;
+            }
+            data::Pane::KlineChart {
+                stream_type,
+                drawings,
+                settings,
+                ..
+            } => {
+                if stream_type
+                    .iter()
+                    .any(|stream| stream_ticker(stream) != market.ticker)
+                {
+                    drawings.retain(|drawing| matches!(
+                        drawing.geometry,
+                        data::chart::kline::drawing::DrawingGeometry::VerticalLine { .. }
+                            | data::chart::kline::drawing::DrawingGeometry::FixedRangeVolumeProfile { .. }
+                    ));
+                }
+                (stream_type, settings)
+            }
+            data::Pane::ComparisonChart {
+                stream_type,
+                settings,
+                ..
+            } => {
+                if let Some(VisualConfig::Comparison(config)) = &mut settings.visual_config {
+                    // Keep the series color, but let the new symbol supply its name.
+                    config.colors = config
+                        .colors
+                        .first()
+                        .map(|(_, color)| {
+                            vec![(exchange::SerTicker::from_parts(market.ticker), *color)]
+                        })
+                        .unwrap_or_default();
+                    config.names.clear();
+                }
+                (stream_type, settings)
+            }
+            data::Pane::HeatmapChart {
+                stream_type,
+                settings,
+                ..
+            }
+            | data::Pane::ShaderHeatmap {
+                stream_type,
+                settings,
+                ..
+            }
+            | data::Pane::TimeAndSales {
+                stream_type,
+                settings,
+                ..
+            }
+            | data::Pane::Ladder {
+                stream_type,
+                settings,
+                ..
+            } => (stream_type, settings),
+        };
+        let previous_exchange = streams.first().map(|stream| stream_ticker(stream).exchange);
+        let tick_multiplier = if previous_exchange
+            .is_some_and(|exchange| exchange.is_depth_client_aggr())
+            && !market.exchange().is_depth_client_aggr()
+            && matches!(
+                content_kind,
+                ContentKind::HeatmapChart | ContentKind::ShaderHeatmap | ContentKind::Ladder
+            ) {
+            Some(exchange::TickMultiplier(10))
+        } else {
+            settings.tick_multiply
+        };
+        let setup = PaneSetup::new(
+            content_kind,
+            market,
+            None,
+            settings.selected_basis,
+            tick_multiplier,
+        );
+        if previous_exchange.is_some_and(|exchange| exchange != market.exchange()) {
+            settings.selected_basis = setup.basis;
+            settings.tick_multiply = setup.tick_multiplier;
+        }
+        let mut retargeted = Vec::with_capacity(streams.len());
+        for mut stream in std::mem::take(streams) {
+            match &mut stream {
+                data::stream::PersistStreamKind::Kline { ticker, timeframe } => {
+                    *ticker = market.ticker;
+                    if !market.exchange().supports_kline_timeframe(*timeframe) {
+                        let basis = setup.basis.unwrap_or_else(|| {
+                            data::chart::Basis::default_kline_time(Some(market), *timeframe)
+                        });
+                        if let data::chart::Basis::Time(supported) = basis {
+                            *timeframe = supported;
+                        }
+                    }
+                }
+                data::stream::PersistStreamKind::Trades { ticker } => *ticker = market.ticker,
+                data::stream::PersistStreamKind::Depth(depth)
+                | data::stream::PersistStreamKind::DepthAndTrades(depth) => {
+                    if depth.ticker.exchange != market.exchange() {
+                        depth.depth_aggr = setup.depth_aggr;
+                        depth.push_freq = setup.push_freq;
+                    }
+                    depth.ticker = market.ticker;
+                }
+            }
+            if !retargeted.contains(&stream) {
+                retargeted.push(stream);
+            }
+        }
+        *streams = retargeted;
+        false
+    }
+
+    let mut used_fallback = retarget_pane(&mut dashboard.pane, market, btc_reference);
+    for (pane, _) in &mut dashboard.popout {
+        used_fallback |= retarget_pane(pane, market, btc_reference);
+    }
+    used_fallback
+}
+
+fn stream_ticker(stream: &data::stream::PersistStreamKind) -> exchange::Ticker {
+    match stream {
+        data::stream::PersistStreamKind::Kline { ticker, .. }
+        | data::stream::PersistStreamKind::Trades { ticker } => *ticker,
+        data::stream::PersistStreamKind::Depth(depth)
+        | data::stream::PersistStreamKind::DepthAndTrades(depth) => depth.ticker,
+    }
+}
+
 pub fn export_template(layout: &Layout) -> Result<Vec<u8>, String> {
     let file = TemplateFile {
         format: TEMPLATE_FORMAT.to_string(),
@@ -709,5 +892,380 @@ mod template_tests {
     #[test]
     fn unrelated_json_is_not_accepted_as_a_template() {
         assert!(import_template(br#"{"name":"not a template"}"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod market_layout_tests {
+    use super::*;
+    use data::chart::{
+        Basis, ViewConfig,
+        kline::drawing::{Drawing, DrawingGeometry},
+    };
+    use data::layout::pane::{LinkGroup, Settings, VisualConfig};
+    use data::stream::{PersistDepth, PersistStreamKind};
+    use exchange::options::OptionsUnderlying;
+    use exchange::{Ticker, TickerInfo, Timeframe, adapter::Exchange};
+
+    fn market(symbol: &str) -> TickerInfo {
+        TickerInfo::new(
+            Ticker::new(symbol, Exchange::BinanceLinear),
+            0.01,
+            0.001,
+            None,
+        )
+    }
+
+    fn streams(ticker: Ticker) -> Vec<PersistStreamKind> {
+        vec![
+            PersistStreamKind::Kline {
+                ticker,
+                timeframe: Timeframe::M5,
+            },
+            PersistStreamKind::Trades { ticker },
+            PersistStreamKind::Depth(PersistDepth {
+                ticker,
+                depth_aggr: exchange::adapter::StreamTicksize::Client,
+                push_freq: exchange::PushFrequency::ServerDefault,
+            }),
+        ]
+    }
+
+    fn split(a: data::Pane, b: data::Pane) -> data::Pane {
+        data::Pane::Split {
+            axis: Axis::Vertical,
+            ratio: 0.35,
+            a: Box::new(a),
+            b: Box::new(b),
+        }
+    }
+
+    fn gex(underlying: OptionsUnderlying, reference: Option<TickerInfo>) -> data::Pane {
+        data::Pane::GexChart {
+            underlying,
+            liquidity_reference: reference,
+            settings: Settings::default(),
+            link_group: Some(LinkGroup::A),
+        }
+    }
+
+    #[test]
+    fn market_layout_retargets_all_streams_and_preserves_layout_and_settings() {
+        let btc = market("BTCUSDT");
+        let sol = market("SOLUSDT");
+        let settings = Settings {
+            selected_basis: Some(Basis::Time(Timeframe::M5)),
+            tick_multiply: Some(exchange::TickMultiplier(10)),
+            ..Settings::default()
+        };
+        let kline = data::Pane::KlineChart {
+            layout: ViewConfig {
+                splits: vec![0.7],
+                ..ViewConfig::default()
+            },
+            kind: data::chart::KlineChartKind::Candles,
+            drawings: vec![Drawing {
+                id: 1,
+                geometry: DrawingGeometry::HorizontalLine {
+                    price: exchange::unit::Price::from_f64(60_000.0),
+                },
+                style: Default::default(),
+                visible: true,
+            }],
+            stream_type: streams(btc.ticker),
+            settings: settings.clone(),
+            indicators: vec![data::chart::indicator::KlineIndicator::Volume],
+            link_group: Some(LinkGroup::A),
+        };
+        let source = data::Dashboard {
+            pane: split(
+                kline,
+                split(
+                    data::Pane::ShaderHeatmap {
+                        studies: vec![],
+                        stream_type: streams(btc.ticker),
+                        settings: settings.clone(),
+                        indicators: vec![],
+                        link_group: Some(LinkGroup::A),
+                    },
+                    split(
+                        data::Pane::Ladder {
+                            stream_type: streams(btc.ticker),
+                            settings: settings.clone(),
+                            link_group: None,
+                        },
+                        split(
+                            data::Pane::TimeAndSales {
+                                stream_type: streams(btc.ticker),
+                                settings: settings.clone(),
+                                link_group: None,
+                            },
+                            gex(OptionsUnderlying::Btc, Some(btc)),
+                        ),
+                    ),
+                ),
+            ),
+            popout: vec![(
+                data::Pane::HeatmapChart {
+                    layout: ViewConfig::default(),
+                    studies: vec![],
+                    stream_type: streams(btc.ticker),
+                    settings,
+                    indicators: vec![],
+                    link_group: Some(LinkGroup::B),
+                },
+                WindowSpec {
+                    width: 900.0,
+                    ..WindowSpec::default()
+                },
+            )],
+        };
+        let original = serde_json::to_value(&source).unwrap();
+        let mut copied = source.clone();
+        assert!(retarget_dashboard(&mut copied, sol, Some(btc)));
+        let actual = serde_json::to_value(&copied).unwrap();
+        let mut expected = original.clone();
+        fn replace(value: &mut serde_json::Value, ticker: &serde_json::Value) {
+            match value {
+                serde_json::Value::Object(object) => {
+                    for (key, value) in object {
+                        if key == "ticker" {
+                            *value = ticker.clone();
+                        } else if key == "drawings" {
+                            *value = serde_json::json!([]);
+                        } else if key != "liquidity_reference" {
+                            replace(value, ticker);
+                        }
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        replace(value, ticker);
+                    }
+                }
+                _ => {}
+            }
+        }
+        replace(&mut expected, &serde_json::to_value(sol.ticker).unwrap());
+        assert_eq!(actual, expected);
+        assert_eq!(serde_json::to_value(&source).unwrap(), original);
+        let restored = dashboard_from_data(copied.clone(), Uuid::new_v4());
+        let reserialized = data::Dashboard::from(&restored);
+        assert_eq!(reserialized.popout.len(), 1);
+        assert_eq!(reserialized.popout[0].1.width, 900.0);
+    }
+
+    #[test]
+    fn market_layout_updates_supported_gex_and_resets_unsupported_gex_to_btc() {
+        for (symbol, expected) in [
+            ("BTCUSDT", OptionsUnderlying::Btc),
+            ("ETHUSDT", OptionsUnderlying::Eth),
+            ("XAUTUSDT", OptionsUnderlying::Gld),
+            ("SOLUSDT", OptionsUnderlying::Btc),
+        ] {
+            let target = market(symbol);
+            let btc = market("BTCUSDT");
+            let mut copied = data::Dashboard {
+                pane: gex(OptionsUnderlying::Eth, Some(market("ETHUSDT"))),
+                ..data::Dashboard::default()
+            };
+            assert_eq!(
+                retarget_dashboard(&mut copied, target, Some(btc)),
+                symbol == "SOLUSDT"
+            );
+            let data::Pane::GexChart {
+                underlying,
+                liquidity_reference,
+                link_group,
+                ..
+            } = copied.pane
+            else {
+                panic!("GEX pane lost")
+            };
+            assert_eq!(underlying, expected);
+            assert_eq!(
+                liquidity_reference,
+                Some(if symbol == "SOLUSDT" { btc } else { target })
+            );
+            assert_eq!(link_group, Some(LinkGroup::A));
+        }
+        let mut copied = data::Dashboard {
+            pane: gex(OptionsUnderlying::Eth, Some(market("ETHUSDT"))),
+            ..Default::default()
+        };
+        assert!(retarget_dashboard(&mut copied, market("SOLUSDT"), None));
+        assert!(matches!(
+            copied.pane,
+            data::Pane::GexChart {
+                underlying: OptionsUnderlying::Btc,
+                liquidity_reference: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn market_layout_collapses_duplicate_comparison_streams_and_updates_series() {
+        let btc = market("BTCUSDT");
+        let eth = market("ETHUSDT");
+        let sol = market("SOLUSDT");
+        let color = iced::Color::from_rgb(0.1, 0.2, 0.3);
+        let mut copied = data::Dashboard {
+            pane: data::Pane::ComparisonChart {
+                stream_type: [streams(btc.ticker), streams(eth.ticker)].concat(),
+                settings: Settings {
+                    visual_config: Some(VisualConfig::Comparison(
+                        data::chart::comparison::Config {
+                            colors: vec![(exchange::SerTicker::from_parts(btc.ticker), color)],
+                            names: vec![(
+                                exchange::SerTicker::from_parts(btc.ticker),
+                                "BTC".into(),
+                            )],
+                        },
+                    )),
+                    ..Default::default()
+                },
+                link_group: None,
+            },
+            ..Default::default()
+        };
+        assert!(!retarget_dashboard(&mut copied, sol, None));
+        let data::Pane::ComparisonChart {
+            stream_type,
+            settings,
+            ..
+        } = copied.pane
+        else {
+            panic!("Comparison pane lost")
+        };
+        assert_eq!(stream_type, streams(sol.ticker));
+        let Some(VisualConfig::Comparison(config)) = settings.visual_config else {
+            panic!("Comparison settings lost")
+        };
+        assert!(config.names.is_empty());
+        assert_eq!(
+            config.colors,
+            vec![(exchange::SerTicker::from_parts(sol.ticker), color)]
+        );
+    }
+
+    #[test]
+    fn market_layout_adapts_streams_when_changing_exchange() {
+        let btc = market("BTCUSDT");
+        let sol = TickerInfo::new(
+            Ticker::new("SOLUSDT", Exchange::MexcLinear),
+            0.01,
+            0.001,
+            None,
+        );
+        let mut copied = data::Dashboard {
+            pane: data::Pane::KlineChart {
+                layout: ViewConfig::default(),
+                kind: data::chart::KlineChartKind::Candles,
+                drawings: vec![],
+                stream_type: vec![PersistStreamKind::Kline {
+                    ticker: btc.ticker,
+                    timeframe: Timeframe::M3,
+                }],
+                settings: Settings {
+                    selected_basis: Some(Basis::Time(Timeframe::M3)),
+                    ..Default::default()
+                },
+                indicators: vec![],
+                link_group: None,
+            },
+            popout: vec![(
+                data::Pane::ShaderHeatmap {
+                    studies: vec![],
+                    stream_type: vec![PersistStreamKind::DepthAndTrades(PersistDepth {
+                        ticker: btc.ticker,
+                        depth_aggr: exchange::adapter::StreamTicksize::Client,
+                        push_freq: exchange::PushFrequency::Custom(Timeframe::MS100),
+                    })],
+                    settings: Settings {
+                        selected_basis: Some(Basis::Time(Timeframe::MS100)),
+                        ..Default::default()
+                    },
+                    indicators: vec![],
+                    link_group: None,
+                },
+                WindowSpec::default(),
+            )],
+        };
+        retarget_dashboard(&mut copied, sol, None);
+        let data::Pane::KlineChart {
+            stream_type,
+            settings,
+            ..
+        } = copied.pane
+        else {
+            panic!("Kline pane lost")
+        };
+        let PersistStreamKind::Kline { timeframe, ticker } = stream_type[0] else {
+            panic!("Kline stream lost")
+        };
+        assert_eq!(ticker, sol.ticker);
+        assert!(sol.exchange().supports_kline_timeframe(timeframe));
+        assert_eq!(settings.selected_basis, Some(Basis::Time(timeframe)));
+        let data::Pane::ShaderHeatmap {
+            stream_type,
+            settings,
+            ..
+        } = &copied.popout[0].0
+        else {
+            panic!("Heatmap pane lost")
+        };
+        let PersistStreamKind::DepthAndTrades(depth) = &stream_type[0] else {
+            panic!("Legacy stream lost")
+        };
+        assert_eq!(depth.ticker, sol.ticker);
+        assert_eq!(depth.push_freq, exchange::PushFrequency::ServerDefault);
+        assert_eq!(
+            depth.depth_aggr,
+            sol.exchange()
+                .stream_ticksize(settings.tick_multiply, exchange::TickMultiplier(50))
+        );
+        let Some(Basis::Time(timeframe)) = settings.selected_basis else {
+            panic!("Heatmap basis lost")
+        };
+        assert!(sol.exchange().supports_heatmap_timeframe(timeframe));
+    }
+
+    #[test]
+    fn market_layout_preserves_volume_profile_ranges_but_drops_old_price_levels() {
+        let profile = Drawing {
+            id: 1,
+            geometry: DrawingGeometry::FixedRangeVolumeProfile {
+                first: exchange::UnixMs::new(1_000),
+                second: exchange::UnixMs::new(2_000),
+            },
+            style: Default::default(),
+            visible: true,
+        };
+        let price_line = Drawing {
+            id: 2,
+            geometry: DrawingGeometry::HorizontalLine {
+                price: exchange::unit::Price::from_f64(60_000.0),
+            },
+            style: Default::default(),
+            visible: true,
+        };
+        let mut copied = data::Dashboard {
+            pane: data::Pane::KlineChart {
+                layout: ViewConfig::default(),
+                kind: data::chart::KlineChartKind::Candles,
+                drawings: vec![profile.clone(), price_line],
+                stream_type: streams(market("BTCUSDT").ticker),
+                settings: Settings::default(),
+                indicators: vec![],
+                link_group: None,
+            },
+            ..Default::default()
+        };
+        retarget_dashboard(&mut copied, market("SOLUSDT"), None);
+        let data::Pane::KlineChart { drawings, .. } = copied.pane else {
+            panic!("Kline pane lost")
+        };
+        assert_eq!(drawings, vec![profile]);
     }
 }
