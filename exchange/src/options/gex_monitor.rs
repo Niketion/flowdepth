@@ -238,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_btc_and_eth_urls() {
+    fn builds_supported_crypto_urls() {
         assert_eq!(
             build_history_url("https://example.test/", OptionsUnderlying::Btc),
             "https://example.test/api/gex-history?asset=BTC&range=24h&format=flat"
@@ -246,6 +246,10 @@ mod tests {
         assert_eq!(
             build_history_url("https://example.test", OptionsUnderlying::Eth),
             "https://example.test/api/gex-history?asset=ETH&range=24h&format=flat"
+        );
+        assert_eq!(
+            build_history_url("https://example.test", OptionsUnderlying::Sol),
+            "https://example.test/api/gex-history?asset=SOL&range=24h&format=flat"
         );
     }
 

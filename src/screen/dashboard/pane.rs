@@ -135,17 +135,19 @@ pub enum Event {
 pub enum GexChartAsset {
     Btc,
     Eth,
+    Sol,
     Xau,
     Nq,
 }
 
 impl GexChartAsset {
-    const ALL: [Self; 4] = [Self::Btc, Self::Eth, Self::Xau, Self::Nq];
+    const ALL: [Self; 5] = [Self::Btc, Self::Eth, Self::Sol, Self::Xau, Self::Nq];
 
     const fn underlying(self) -> exchange::options::OptionsUnderlying {
         match self {
             Self::Btc => exchange::options::OptionsUnderlying::Btc,
             Self::Eth => exchange::options::OptionsUnderlying::Eth,
+            Self::Sol => exchange::options::OptionsUnderlying::Sol,
             Self::Xau => exchange::options::OptionsUnderlying::Gld,
             Self::Nq => exchange::options::OptionsUnderlying::Ndx,
         }
@@ -155,6 +157,7 @@ impl GexChartAsset {
         match value {
             exchange::options::OptionsUnderlying::Btc => Self::Btc,
             exchange::options::OptionsUnderlying::Eth => Self::Eth,
+            exchange::options::OptionsUnderlying::Sol => Self::Sol,
             exchange::options::OptionsUnderlying::Gld => Self::Xau,
             exchange::options::OptionsUnderlying::Ndx => Self::Nq,
         }
@@ -166,6 +169,7 @@ impl std::fmt::Display for GexChartAsset {
         f.write_str(match self {
             Self::Btc => "BTC",
             Self::Eth => "ETH",
+            Self::Sol => "SOL",
             Self::Xau => "XAU",
             Self::Nq => "NQ",
         })
@@ -1293,7 +1297,7 @@ impl State {
             } => {
                 if *unsupported {
                     let base = center(text(
-                        "GEX data is currently available for BTC, ETH, XAUT via GLD, and NQ/NAS100 via NDX.",
+                        "GEX data is currently available for BTC, ETH, SOL, XAUT via GLD, and NQ/NAS100 via NDX.",
                     ))
                     .into();
                     self.compose_stack_view(
@@ -1855,12 +1859,14 @@ impl State {
                             }
                             return Some(Effect::RefreshStreams);
                         }
-                        let focus_id =
-                            if matches!(drawing, super::chart::DrawingMessage::PointerPressed(_, _)) {
-                                c.drawing_text_input_id()
-                            } else {
-                                None
-                            };
+                        let focus_id = if matches!(
+                            drawing,
+                            super::chart::DrawingMessage::PointerPressed(_, _)
+                        ) {
+                            c.drawing_text_input_id()
+                        } else {
+                            None
+                        };
                         if created_vp {
                             self.warn_volume_profile_fetch_support();
                         }
@@ -3684,10 +3690,10 @@ mod tests {
     }
 
     #[test]
-    fn gex_asset_selector_contains_only_btc_eth_and_xau() {
+    fn gex_asset_selector_contains_supported_native_and_proxy_assets() {
         assert_eq!(
             GexChartAsset::ALL.map(|asset| asset.to_string()),
-            ["BTC", "ETH", "XAU", "NQ"]
+            ["BTC", "ETH", "SOL", "XAU", "NQ"]
         );
 
         let mut state = gex_state(data::chart::gex::Config::default());
@@ -3710,5 +3716,25 @@ mod tests {
             chart.as_ref().map(GexChart::underlying),
             Some(exchange::options::OptionsUnderlying::Gld)
         );
+
+        assert!(matches!(
+            state.update(Event::GexAssetSelected(GexChartAsset::Sol)),
+            Some(Effect::RefreshStreams)
+        ));
+        let Content::Gex {
+            chart,
+            underlying,
+            unsupported,
+            ..
+        } = &state.content
+        else {
+            panic!("GEX content")
+        };
+        assert_eq!(*underlying, exchange::options::OptionsUnderlying::Sol);
+        assert_eq!(
+            chart.as_ref().map(GexChart::underlying),
+            Some(exchange::options::OptionsUnderlying::Sol)
+        );
+        assert!(!unsupported);
     }
 }

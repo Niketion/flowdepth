@@ -239,7 +239,17 @@ impl DeribitOptionsClient {
         let mut request = self
             .client
             .get(format!("{}/{}", self.base_url, method))
-            .query(&[("currency", underlying.as_str()), ("kind", "option")]);
+            .query(&[
+                (
+                    "currency",
+                    if underlying == OptionsUnderlying::Sol {
+                        "USDC"
+                    } else {
+                        underlying.as_str()
+                    },
+                ),
+                ("kind", "option"),
+            ]);
         if !extra.is_empty() {
             request = request.query(extra);
         }
@@ -286,6 +296,8 @@ fn parse_rpc<T: for<'de> Deserialize<'de>>(body: &str) -> Result<T, DeribitError
 #[derive(Debug, Clone, Deserialize)]
 struct InstrumentDto {
     instrument_name: String,
+    #[serde(default)]
+    base_currency: Option<String>,
     expiration_timestamp: u64,
     strike: f64,
     option_type: String,
@@ -296,6 +308,22 @@ struct InstrumentDto {
 
 impl InstrumentDto {
     fn into_model(self, underlying: OptionsUnderlying) -> Option<OptionInstrument> {
+        // The USDC endpoint includes several assets. Accept only the requested
+        // chain, including when older cached metadata omits base_currency.
+        let prefix = match underlying {
+            OptionsUnderlying::Btc => "BTC-",
+            OptionsUnderlying::Eth => "ETH-",
+            OptionsUnderlying::Sol => "SOL_USDC-",
+            OptionsUnderlying::Gld | OptionsUnderlying::Ndx => return None,
+        };
+        if !self.instrument_name.starts_with(prefix)
+            || self
+                .base_currency
+                .as_deref()
+                .is_some_and(|base| base != underlying.as_str())
+        {
+            return None;
+        }
         let right = match self.option_type.as_str() {
             "call" => OptionRight::Call,
             "put" => OptionRight::Put,
@@ -312,7 +340,11 @@ impl InstrumentDto {
                 expiration_timestamp: UnixMs::new(self.expiration_timestamp),
                 strike: self.strike,
                 right,
-                contract_size: self.contract_size,
+                // Deribit reports option OI in underlying coins, not lots.
+                // One model exposure unit is therefore one coin. In particular,
+                // the SOL trading-lot multiplier must not multiply OI or Derive
+                // trade amounts a second time in the downstream GEX formulas.
+                contract_size: 1.0,
             })
     }
 }
@@ -468,6 +500,108 @@ mod tests {
 
     const INSTRUMENTS: &str = r#"{"jsonrpc":"2.0","result":[{"instrument_name":"BTC-30JUN30-100000-C","expiration_timestamp":1909008000000,"strike":100000.0,"option_type":"call","contract_size":1.0,"is_active":true}]}"#;
     const SUMMARIES: &str = r#"{"jsonrpc":"2.0","result":[{"instrument_name":"BTC-30JUN30-100000-C","open_interest":12.5,"mark_iv":55.0,"underlying_price":101000.0,"interest_rate":0.01,"creation_timestamp":1800000000000},{"instrument_name":"UNKNOWN","open_interest":1.0,"mark_iv":50.0,"underlying_price":101000.0,"interest_rate":0.0}]}"#;
+    const SOL_INSTRUMENTS: &str = r#"{"jsonrpc":"2.0","result":[{"instrument_name":"SOL_USDC-30JUN30-100-C","base_currency":"SOL","expiration_timestamp":1909008000000,"strike":100.0,"option_type":"call","contract_size":10.0,"is_active":true},{"instrument_name":"ETH_USDC-30JUN30-3000-C","base_currency":"ETH","expiration_timestamp":1909008000000,"strike":3000.0,"option_type":"call","contract_size":1.0,"is_active":true},{"instrument_name":"SOL_USDC-30JUN30-100-P","base_currency":"ETH","expiration_timestamp":1909008000000,"strike":100.0,"option_type":"put","contract_size":10.0,"is_active":true}]}"#;
+    const SOL_SUMMARIES: &str = r#"{"jsonrpc":"2.0","result":[{"instrument_name":"SOL_USDC-30JUN30-100-C","open_interest":250.0,"mark_iv":50.0,"underlying_price":110.0,"interest_rate":0.0},{"instrument_name":"ETH_USDC-30JUN30-3000-C","open_interest":1.0,"mark_iv":50.0,"underlying_price":3000.0,"interest_rate":0.0}]}"#;
+
+    #[tokio::test]
+    #[ignore = "contacts the public Deribit API; run explicitly for a live SOL smoke test"]
+    async fn sol_live_chain_contains_only_sol_options() {
+        let client = DeribitOptionsClient::new(None).expect("client");
+        let instruments = client
+            .fetch_instruments(OptionsUnderlying::Sol)
+            .await
+            .expect("live SOL instruments");
+        assert!(!instruments.is_empty());
+        assert!(
+            instruments
+                .iter()
+                .all(|instrument| instrument.underlying == OptionsUnderlying::Sol
+                    && instrument.instrument_name.starts_with("SOL_USDC-")
+                    && instrument.contract_size == 1.0)
+        );
+        let chain = client
+            .fetch_chain(OptionsUnderlying::Sol, &instruments)
+            .await
+            .expect("live SOL chain");
+        assert!(chain.source_spot.is_finite() && chain.source_spot > 0.0);
+        assert!(!chain.contracts.is_empty());
+        assert!(
+            chain
+                .contracts
+                .iter()
+                .all(
+                    |contract| contract.instrument.underlying == OptionsUnderlying::Sol
+                        && contract.market.open_interest_underlying.is_finite()
+                )
+        );
+        assert!(
+            chain
+                .contracts
+                .iter()
+                .any(|contract| contract.market.open_interest_underlying > 0.0)
+        );
+        println!(
+            "Live SOL chain: {} instruments, {} valid contracts, spot {:.4}",
+            instruments.len(),
+            chain.contracts.len(),
+            chain.source_spot
+        );
+    }
+
+    #[tokio::test]
+    async fn sol_chain_uses_usdc_filters_other_assets_and_normalizes_exposure_units() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        let server = std::thread::spawn(move || {
+            let native = format!(
+                r#"[{{"id":0,"result":{{"timestamp":{},"greeks":{{"gamma":0.01}}}}}}]"#,
+                UnixMs::now().as_u64()
+            );
+            for (endpoint, body) in [
+                ("GET /api/v2/public/get_instruments?", SOL_INSTRUMENTS),
+                (
+                    "GET /api/v2/public/get_book_summary_by_currency?",
+                    SOL_SUMMARIES,
+                ),
+                ("POST /api/v2", native.as_str()),
+            ] {
+                let (mut stream, _) = listener.accept().expect("connection");
+                let mut buffer = [0u8; 4096];
+                let count = stream.read(&mut buffer).expect("request");
+                let request = String::from_utf8_lossy(&buffer[..count]);
+                assert!(request.starts_with(endpoint), "{request}");
+                if endpoint.starts_with("GET") {
+                    assert!(request.contains("currency=USDC"));
+                    assert!(request.contains("kind=option"));
+                    assert!(!request.contains("currency=SOL"));
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).expect("response");
+            }
+        });
+        let client = DeribitOptionsClient::with_base_url(format!("http://{address}/api/v2"), None)
+            .expect("client");
+        let instruments = client
+            .fetch_instruments(OptionsUnderlying::Sol)
+            .await
+            .expect("SOL instruments");
+        assert_eq!(instruments.len(), 1);
+        assert_eq!(instruments[0].underlying, OptionsUnderlying::Sol);
+        let chain = client
+            .fetch_chain(OptionsUnderlying::Sol, &instruments)
+            .await
+            .expect("SOL chain");
+        assert_eq!(chain.underlying, OptionsUnderlying::Sol);
+        assert_eq!(chain.source_spot, 110.0);
+        assert_eq!(chain.contracts.len(), 1);
+        assert_eq!(chain.contracts[0].instrument.contract_size, 1.0);
+        assert_eq!(chain.contracts[0].market.open_interest_underlying, 250.0);
+        assert_eq!(chain.contracts[0].market.native_gamma, Some(0.01));
+        server.join().expect("server");
+    }
 
     #[test]
     fn parses_instruments_and_nullable_summary_fields() {

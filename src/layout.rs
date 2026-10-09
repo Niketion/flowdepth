@@ -1022,7 +1022,7 @@ mod market_layout_tests {
         };
         let original = serde_json::to_value(&source).unwrap();
         let mut copied = source.clone();
-        assert!(retarget_dashboard(&mut copied, sol, Some(btc)));
+        assert!(!retarget_dashboard(&mut copied, sol, Some(btc)));
         let actual = serde_json::to_value(&copied).unwrap();
         let mut expected = original.clone();
         fn replace(value: &mut serde_json::Value, ticker: &serde_json::Value) {
@@ -1033,6 +1033,10 @@ mod market_layout_tests {
                             *value = ticker.clone();
                         } else if key == "drawings" {
                             *value = serde_json::json!([]);
+                        } else if key == "GexChart" {
+                            value["underlying"] = serde_json::json!("Sol");
+                            value["liquidity_reference"] =
+                                serde_json::to_value(market("SOLUSDT")).unwrap();
                         } else if key != "liquidity_reference" {
                             replace(value, ticker);
                         }
@@ -1061,7 +1065,8 @@ mod market_layout_tests {
             ("BTCUSDT", OptionsUnderlying::Btc),
             ("ETHUSDT", OptionsUnderlying::Eth),
             ("XAUTUSDT", OptionsUnderlying::Gld),
-            ("SOLUSDT", OptionsUnderlying::Btc),
+            ("SOLUSDT", OptionsUnderlying::Sol),
+            ("XRPUSDT", OptionsUnderlying::Btc),
         ] {
             let target = market(symbol);
             let btc = market("BTCUSDT");
@@ -1071,7 +1076,7 @@ mod market_layout_tests {
             };
             assert_eq!(
                 retarget_dashboard(&mut copied, target, Some(btc)),
-                symbol == "SOLUSDT"
+                symbol == "XRPUSDT"
             );
             let data::Pane::GexChart {
                 underlying,
@@ -1085,7 +1090,7 @@ mod market_layout_tests {
             assert_eq!(underlying, expected);
             assert_eq!(
                 liquidity_reference,
-                Some(if symbol == "SOLUSDT" { btc } else { target })
+                Some(if symbol == "XRPUSDT" { btc } else { target })
             );
             assert_eq!(link_group, Some(LinkGroup::A));
         }
@@ -1093,7 +1098,7 @@ mod market_layout_tests {
             pane: gex(OptionsUnderlying::Eth, Some(market("ETHUSDT"))),
             ..Default::default()
         };
-        assert!(retarget_dashboard(&mut copied, market("SOLUSDT"), None));
+        assert!(retarget_dashboard(&mut copied, market("XRPUSDT"), None));
         assert!(matches!(
             copied.pane,
             data::Pane::GexChart {

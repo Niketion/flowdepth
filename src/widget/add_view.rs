@@ -24,7 +24,7 @@ fn description(kind: ContentKind) -> &'static str {
         ContentKind::ShaderHeatmap => "Order book liquidity",
         ContentKind::Ladder => "Live depth ladder",
         ContentKind::TimeAndSales => "Live executed trades",
-        ContentKind::GexChart => "BTC/ETH options exposure",
+        ContentKind::GexChart => "BTC/ETH/SOL options exposure",
         ContentKind::ComparisonChart => "Compare markets",
         ContentKind::Starter | ContentKind::HeatmapChart => unreachable!("not addable"),
     }

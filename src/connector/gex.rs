@@ -1932,13 +1932,37 @@ mod tests {
 
     #[test]
     fn unsupported_market_never_creates_a_proxy_request() {
-        let ticker = exchange::Ticker::new("SOLUSDT", exchange::adapter::Exchange::BinanceLinear);
+        let ticker = exchange::Ticker::new("XRPUSDT", exchange::adapter::Exchange::BinanceLinear);
         let mut value = coordinator();
         value.set_consumers(exchange::options::resolve_options_underlying(ticker));
         assert!(
             value
                 .due_proxy_fetches(UnixMs::new(1_800_000_000_000), true)
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn sol_market_requests_its_own_chain_and_auxiliary_feeds() {
+        let ticker = exchange::Ticker::new("SOLUSDT", exchange::adapter::Exchange::BinanceLinear);
+        let mut value = coordinator();
+        let now = UnixMs::new(1_800_000_000_000);
+        value.set_consumers(exchange::options::resolve_options_underlying(ticker));
+        assert_eq!(value.subscriber_count(OptionsUnderlying::Sol), 1);
+        assert_eq!(value.subscriber_count(OptionsUnderlying::Btc), 0);
+        let due = value.due_fetches(now, true);
+        assert!(!due.is_empty());
+        assert!(
+            due.iter()
+                .all(|request| request.key() == OptionsChainKey::deribit(OptionsUnderlying::Sol))
+        );
+        assert_eq!(
+            value.due_proxy_fetches(now, true),
+            vec![OptionsUnderlying::Sol]
+        );
+        assert_eq!(
+            value.due_derive_instrument_fetches(now, true),
+            vec![OptionsUnderlying::Sol]
         );
     }
 

@@ -31,17 +31,19 @@ impl std::fmt::Display for OptionsProvider {
 pub enum OptionsUnderlying {
     Btc,
     Eth,
+    Sol,
     Gld,
     Ndx,
 }
 
 impl OptionsUnderlying {
-    pub const ALL: [Self; 2] = [Self::Btc, Self::Eth];
+    pub const ALL: [Self; 3] = [Self::Btc, Self::Eth, Self::Sol];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Btc => "BTC",
             Self::Eth => "ETH",
+            Self::Sol => "SOL",
             Self::Gld => "GLD",
             Self::Ndx => "NDX",
         }
@@ -104,7 +106,9 @@ impl GexSource {
         match underlying {
             OptionsUnderlying::Gld => Self::xaut_gld(),
             OptionsUnderlying::Ndx => Self::nq_ndx(),
-            OptionsUnderlying::Btc | OptionsUnderlying::Eth => Self::deribit(underlying),
+            OptionsUnderlying::Btc | OptionsUnderlying::Eth | OptionsUnderlying::Sol => {
+                Self::deribit(underlying)
+            }
         }
     }
 }
@@ -222,6 +226,7 @@ fn resolve_symbol(symbol: &str) -> Option<OptionsUnderlying> {
     let normalized = symbol.to_ascii_uppercase();
     const BTC: &[&str] = &["BTCUSD", "BTCUSDT", "BTCUSDC"];
     const ETH: &[&str] = &["ETHUSD", "ETHUSDT", "ETHUSDC"];
+    const SOL: &[&str] = &["SOLUSD", "SOLUSDT", "SOLUSDC"];
 
     let without_known_suffix = normalized
         .strip_suffix("-PERP")
@@ -233,6 +238,8 @@ fn resolve_symbol(symbol: &str) -> Option<OptionsUnderlying> {
         Some(OptionsUnderlying::Btc)
     } else if ETH.contains(&without_known_suffix) {
         Some(OptionsUnderlying::Eth)
+    } else if SOL.contains(&without_known_suffix) {
+        Some(OptionsUnderlying::Sol)
     } else {
         None
     }
@@ -317,7 +324,7 @@ mod tests {
         );
         assert_eq!(
             resolve_options_underlying(ticker("SOLUSDT", Exchange::BinanceLinear)),
-            None
+            Some(OptionsUnderlying::Sol)
         );
         assert_eq!(
             resolve_options_underlying(ticker("WBTCUSDT", Exchange::BinanceSpot)),
@@ -330,6 +337,37 @@ mod tests {
         assert_eq!(
             resolve_options_underlying(ticker("BTC2LUSDT", Exchange::BinanceSpot)),
             None
+        );
+    }
+
+    #[test]
+    fn sol_underlying_accepts_exact_pairs_and_rejects_lookalikes() {
+        for symbol in [
+            "SOLUSD",
+            "SOLUSDT",
+            "SOLUSDC",
+            "SOLUSDT-PERP",
+            "SOLUSDC_PERP",
+            "SOLUSD-PERP",
+        ] {
+            assert_eq!(
+                resolve_gex_source(ticker(symbol, Exchange::BinanceLinear)),
+                Some(GexSource::deribit(OptionsUnderlying::Sol))
+            );
+        }
+        for symbol in ["WSOLUSDT", "1000SOLUSDT", "SOL2LUSDT", "SOLDUSDT", "SOLBTC"] {
+            assert_eq!(
+                resolve_options_underlying(ticker(symbol, Exchange::BinanceLinear)),
+                None
+            );
+        }
+        assert_eq!(
+            GexSource::for_chart_underlying(OptionsUnderlying::Sol),
+            GexSource::deribit(OptionsUnderlying::Sol)
+        );
+        assert_eq!(
+            serde_json::from_str::<OptionsUnderlying>("\"Sol\"").unwrap(),
+            OptionsUnderlying::Sol
         );
     }
 
@@ -347,7 +385,7 @@ mod tests {
         );
         assert_eq!(
             resolve_gex_source(ticker("SOLUSDT", Exchange::BinanceLinear)),
-            None
+            Some(GexSource::deribit(OptionsUnderlying::Sol))
         );
     }
 

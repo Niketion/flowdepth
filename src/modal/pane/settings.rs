@@ -912,7 +912,7 @@ pub fn gex_cfg_view<'a>(
         price_range,
         text(format!(
             "Minimum OI: {:.1} {}",
-            cfg.min_open_interest, "BTC/ETH"
+            cfg.min_open_interest, "BTC/ETH/SOL"
         )),
         min_oi,
         text(format!(

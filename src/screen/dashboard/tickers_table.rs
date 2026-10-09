@@ -1915,7 +1915,18 @@ mod options_filter_tests {
         assert!(matches_options_filter(ticker("BTCUSDT"), None, true));
         assert!(matches_options_filter(ticker("ETHUSDT"), None, true));
         assert!(matches_options_filter(ticker("XAUTUSDT"), None, true));
-        assert!(!matches_options_filter(ticker("SOLUSDT"), None, true));
+        assert!(matches_options_filter(ticker("SOLUSDT"), None, true));
+        assert!(!matches_options_filter(ticker("XRPUSDT"), None, true));
+        assert!(matches_options_filter(
+            ticker("SOLUSDT"),
+            Some(OptionsUnderlying::Sol),
+            false
+        ));
+        assert!(!matches_options_filter(
+            ticker("BTCUSDT"),
+            Some(OptionsUnderlying::Sol),
+            false
+        ));
         assert!(matches_options_filter(
             ticker("BTCUSDT"),
             Some(OptionsUnderlying::Btc),
