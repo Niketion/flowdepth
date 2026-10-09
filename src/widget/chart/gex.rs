@@ -1210,6 +1210,28 @@ impl canvas::Program<gex::Message> for GexProfileTable<'_> {
                 .map(|visual| self.strikes.len() - 1 - visual)
         });
 
+        if self.config.show_current_price
+            && let Some(y) =
+                reference_y_for_price(self.snapshot.source_spot, self.strikes, &row_centers)
+        {
+            // Draw beneath the bars and labels to keep the GEX levels prominent.
+            frame.stroke(
+                &canvas::Path::line(
+                    Point::new(0.0, y),
+                    Point::new(columns.level_bounds.x + columns.level_bounds.width, y),
+                ),
+                canvas::Stroke {
+                    line_dash: canvas::LineDash {
+                        segments: &[4.0, 4.0],
+                        offset: 0,
+                    },
+                    ..canvas::Stroke::default()
+                        .with_color(palette.background.base.text.scale_alpha(0.4))
+                        .with_width(1.0)
+                },
+            );
+        }
+
         draw_table_header(&mut frame, &columns, max_gex, palette.background.base.text);
         for (index, strike) in self.strikes.iter().enumerate().rev() {
             let y = row_centers[index];
@@ -1506,7 +1528,7 @@ fn draw_references(
         draw_reference_band(
             frame,
             columns,
-            (sy + fy) * 0.5,
+            fy,
             &format!(
                 "{} {:.2} / {} {:.2}",
                 if density == GexLayoutDensity::Minimal {
@@ -1528,10 +1550,8 @@ fn draw_references(
         return;
     }
     if let (Some(y), Some(price)) = (spot_y, spot) {
-        draw_reference_band(
+        draw_cell_text(
             frame,
-            columns,
-            y,
             &format!(
                 "{} {:.2}",
                 if density == GexLayoutDensity::Minimal {
@@ -1541,8 +1561,9 @@ fn draw_references(
                 },
                 price
             ),
-            palette.primary.strong.color,
-            band_height,
+            columns.level_bounds,
+            y,
+            palette.background.base.text.scale_alpha(0.65),
         );
     }
     if let (Some(y), Some(price)) = (flip_y, flip) {

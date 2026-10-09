@@ -186,7 +186,7 @@ pub fn is_trade_fetch_enabled() -> bool {
     trade_fetch_mode() != TradeFetchMode::Off
 }
 
-fn supports_exchange_trade_fetch(exchange: Exchange) -> bool {
+pub fn supports_exchange_trade_fetch(exchange: Exchange) -> bool {
     matches!(
         exchange,
         Exchange::BinanceSpot

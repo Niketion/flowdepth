@@ -2812,6 +2812,22 @@ impl canvas::Program<Message> for KlineChart {
                                 &config,
                                 palette,
                             );
+                        } else if let Some(profile) = build_partial_fixed_range_volume_profile(
+                            &self.data_source,
+                            from,
+                            to,
+                            chart.tick_size,
+                            &config,
+                        ) {
+                            draw_volume_profile(
+                                frame,
+                                profile,
+                                &interval_to_x,
+                                &price_to_y,
+                                chart.cell_height,
+                                (&config).into(),
+                                palette,
+                            );
                         }
                     }
                     if self.indicator_enabled(KlineIndicator::Vwap) {
@@ -4704,6 +4720,33 @@ fn build_fixed_range_volume_profile(
     tick_size: PriceStep,
     config: &FixedRangeVolumeProfileConfig,
 ) -> Option<SessionProfile> {
+    build_volume_profile(data_source, from, to, tick_size, config, |_| true)
+}
+
+/// Incremental variant used while a fixed-range volume profile is still
+/// loading: builds the profile from the buckets that already carry raw trade
+/// data (live or fetched), so the drawing fills up chunk by chunk instead of
+/// staying hidden until the whole range is covered.
+fn build_partial_fixed_range_volume_profile(
+    data_source: &PlotData<KlineDataPoint>,
+    from: UnixMs,
+    to: UnixMs,
+    tick_size: PriceStep,
+    config: &FixedRangeVolumeProfileConfig,
+) -> Option<SessionProfile> {
+    build_volume_profile(data_source, from, to, tick_size, config, |dp| {
+        dp.trade_coverage != data::chart::kline::TradeCoverage::Unknown
+    })
+}
+
+fn build_volume_profile(
+    data_source: &PlotData<KlineDataPoint>,
+    from: UnixMs,
+    to: UnixMs,
+    tick_size: PriceStep,
+    config: &FixedRangeVolumeProfileConfig,
+    include: impl Fn(&KlineDataPoint) -> bool,
+) -> Option<SessionProfile> {
     let PlotData::TimeBased(timeseries) = data_source else {
         return None;
     };
@@ -4720,6 +4763,9 @@ fn build_fixed_range_volume_profile(
     let mut low: Option<Price> = None;
 
     for (_, dp) in timeseries.datapoints.range(from..to) {
+        if !include(dp) {
+            continue;
+        }
         high = Some(high.map_or(dp.kline.high, |value| value.max(dp.kline.high)));
         low = Some(low.map_or(dp.kline.low, |value| value.min(dp.kline.low)));
         for (price, trades) in &dp.footprint.trades {

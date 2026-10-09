@@ -277,6 +277,37 @@ impl State {
         }
     }
 
+    /// Warn when a fixed-range volume profile is drawn but historical trade
+    /// data cannot be fetched: trade fetch disabled, or the exchange is not
+    /// supported for REST trade history.
+    fn warn_volume_profile_fetch_support(&mut self) {
+        let Some(ticker_info) = self.stream_pair() else {
+            return;
+        };
+        if !fetcher::is_trade_fetch_enabled() {
+            log::warn!(
+                "DRAWING VolumeProfile | pane={} action=created reason=trade_fetch_disabled venue={} symbol={}",
+                fetcher::short_id(self.id),
+                fetcher::format_venue(&ticker_info),
+                fetcher::format_symbol(&ticker_info)
+            );
+            self.notifications.push(Toast::warn(
+                "Volume profile drawn, but trade fetch is disabled: enable \"Trade Fetch\" in the Network settings to load historical volume.",
+            ));
+        } else if !fetcher::supports_exchange_trade_fetch(ticker_info.exchange()) {
+            log::warn!(
+                "DRAWING VolumeProfile | pane={} action=created reason=unsupported_exchange venue={} symbol={}",
+                fetcher::short_id(self.id),
+                fetcher::format_venue(&ticker_info),
+                fetcher::format_symbol(&ticker_info)
+            );
+            self.notifications.push(Toast::warn(format!(
+                "Volume profile drawn, but historical trade fetch is not supported for {}: the profile will stay empty.",
+                ticker_info.exchange()
+            )));
+        }
+    }
+
     pub fn reconcile_gex_liquidity_stream(&mut self) {
         let Content::Gex {
             chart,
@@ -1812,15 +1843,28 @@ impl State {
                 Content::Kline { chart: Some(c), .. } => {
                     if let super::chart::Message::Drawing(drawing) = &msg {
                         let had_fixed_volume_profiles = c.has_fixed_volume_profiles();
+                        let had_vp_count = c.fixed_volume_profile_count();
                         c.handle_drawing(drawing);
                         let has_fixed_volume_profiles = c.has_fixed_volume_profiles();
+                        let has_vp_count = c.fixed_volume_profile_count();
+                        let created_vp = has_vp_count > had_vp_count;
                         if had_fixed_volume_profiles != has_fixed_volume_profiles {
                             self.reconcile_candlestick_trade_stream();
+                            if created_vp {
+                                self.warn_volume_profile_fetch_support();
+                            }
                             return Some(Effect::RefreshStreams);
                         }
-                        if matches!(drawing, super::chart::DrawingMessage::PointerPressed(_, _))
-                            && let Some(id) = c.drawing_text_input_id()
-                        {
+                        let focus_id =
+                            if matches!(drawing, super::chart::DrawingMessage::PointerPressed(_, _)) {
+                                c.drawing_text_input_id()
+                            } else {
+                                None
+                            };
+                        if created_vp {
+                            self.warn_volume_profile_fetch_support();
+                        }
+                        if let Some(id) = focus_id {
                             return Some(Effect::FocusWidget(id));
                         }
                     } else {

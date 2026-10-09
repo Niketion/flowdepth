@@ -230,12 +230,20 @@ impl KlineChart {
     }
 
     pub fn has_fixed_volume_profiles(&self) -> bool {
-        self.drawings.drawings.iter().any(|drawing| {
-            matches!(
-                drawing.geometry,
-                DrawingGeometry::FixedRangeVolumeProfile { .. }
-            )
-        })
+        self.fixed_volume_profile_count() > 0
+    }
+
+    pub fn fixed_volume_profile_count(&self) -> usize {
+        self.drawings
+            .drawings
+            .iter()
+            .filter(|drawing| {
+                matches!(
+                    drawing.geometry,
+                    DrawingGeometry::FixedRangeVolumeProfile { .. }
+                )
+            })
+            .count()
     }
 
     pub(super) fn fixed_volume_profile_ready(&self, from: UnixMs, to: UnixMs) -> bool {
