@@ -1,4 +1,4 @@
-use super::{BasisSeriesExt, KlineIndicatorImpl};
+use super::{AvailabilityCause, BasisSeriesExt, IndicatorAvailability, KlineIndicatorImpl};
 use crate::chart::{
     Caches, Message, ViewState,
     indicator::{
@@ -18,7 +18,9 @@ use iced::{
     Color, Point, Size, Theme,
     widget::canvas::{self, Path, Stroke},
 };
-use indicator_engine::{FrameOutput, PlotDescriptor, PlotStyle, PlotValueType, ReadoutBehavior};
+use indicator_engine::{
+    FrameOutput, PlotDescriptor, PlotScale, PlotStyle, PlotValueType, ReadoutBehavior,
+};
 use std::ops::RangeInclusive;
 
 pub struct ScriptedIndicator {
@@ -65,11 +67,27 @@ impl KlineIndicatorImpl for ScriptedIndicator {
             range,
         )
     }
-    fn unavailable_message(&self, _chart: &ViewState, _indicator: &str) -> Option<String> {
+    fn availability(&self, _chart: &ViewState) -> IndicatorAvailability {
+        if self.series.is_cvd() && !self.series.directional_volume_available {
+            let empty = match &self.series.output {
+                data::chart::BasisSeries::Time(v) => v.is_empty(),
+                data::chart::BasisSeries::Tick(v) => v.is_empty(),
+            };
+            if empty {
+                IndicatorAvailability::Unknown
+            } else {
+                IndicatorAvailability::Unavailable(AvailabilityCause::TradeData)
+            }
+        } else {
+            IndicatorAvailability::Available
+        }
+    }
+    fn unavailable_message(&self, chart: &ViewState, indicator: &str) -> Option<String> {
         self.series
             .error
             .as_ref()
             .map(|error| format!("Indicator calculation failed: {error}"))
+            .or_else(|| self.availability(chart).unavailable_message(indicator))
     }
     fn rebuild_from_source(&mut self, source: &PlotData<KlineDataPoint>) {
         self.series.sync(source);
@@ -94,6 +112,7 @@ impl KlineIndicatorImpl for ScriptedIndicator {
     }
     fn on_config_changed(&mut self, config: &Config) {
         self.series.configure(config.scripted);
+        self.series.configure_cvd(config.cvd);
     }
 }
 
@@ -128,31 +147,43 @@ impl ScriptPlot<'_> {
     }
 }
 
+fn plot_extents<'a, S: Series<Y = FrameOutput>>(
+    plots: impl Iterator<Item = &'a PlotDescriptor>,
+    series: &S,
+    range: RangeInclusive<u64>,
+) -> Option<(f32, f32)> {
+    let plots: Vec<_> = plots.collect();
+    let (mut min, mut max) = (f32::INFINITY, f32::NEG_INFINITY);
+    series.for_each_in(range, |_, output| {
+        for plot in &plots {
+            if let Some(value) = ScriptPlot::value(output, &plot.id) {
+                min = min.min(value);
+                max = max.max(value);
+            }
+        }
+    });
+    if !min.is_finite() {
+        return None;
+    }
+    if plots.iter().any(|plot| plot.style == PlotStyle::Histogram) {
+        min = min.min(0.0);
+        max = max.max(0.0);
+    }
+    let padding = ((max - min) * 0.08).max(0.01);
+    Some((min - padding, max + padding))
+}
+
 impl<S: Series<Y = FrameOutput>> Plot<S> for ScriptPlot<'_> {
     fn y_extents(&self, series: &S, range: RangeInclusive<u64>) -> Option<(f32, f32)> {
-        let mut min = f32::INFINITY;
-        let mut max = f32::NEG_INFINITY;
-        let include_zero = self
-            .visible()
-            .any(|plot| plot.style == PlotStyle::Histogram);
-        series.for_each_in(range, |_, output| {
-            for plot in self.visible() {
-                if let Some(value) = Self::value(output, &plot.id) {
-                    min = min.min(value);
-                    max = max.max(value);
-                }
-            }
-        });
-        if !min.is_finite() {
-            return None;
-        }
-        if include_zero {
-            min = min.min(0.0);
-            max = max.max(0.0);
-        }
-        let padding = ((max - min) * 0.08).max(0.01);
-        Some((min - padding, max + padding))
+        let has_primary = self.visible().any(|plot| plot.scale == PlotScale::Price);
+        plot_extents(
+            self.visible()
+                .filter(|plot| !has_primary || plot.scale == PlotScale::Price),
+            series,
+            range,
+        )
     }
+
     fn draw(
         &self,
         frame: &mut canvas::Frame,
@@ -162,7 +193,32 @@ impl<S: Series<Y = FrameOutput>> Plot<S> for ScriptPlot<'_> {
         range: RangeInclusive<u64>,
         scale: &YScale,
     ) {
-        for (index, plot) in self.visible().enumerate() {
+        // Draw bars first so optional independent-scale bars cannot cover a line.
+        for (index, plot) in self
+            .visible()
+            .enumerate()
+            .filter(|(_, p)| p.style == PlotStyle::Histogram)
+            .chain(
+                self.visible()
+                    .enumerate()
+                    .filter(|(_, p)| p.style != PlotStyle::Histogram),
+            )
+        {
+            let independent;
+            let scale = if plot.scale == PlotScale::Independent {
+                let Some((min, max)) = plot_extents(std::iter::once(plot), series, range.clone())
+                else {
+                    continue;
+                };
+                independent = YScale {
+                    min,
+                    max,
+                    px_height: scale.px_height,
+                };
+                &independent
+            } else {
+                scale
+            };
             let color = Self::color(plot, theme, index);
             let mut previous = None;
             series.for_each_in(range.clone(), |key, output| {
@@ -206,7 +262,14 @@ impl<S: Series<Y = FrameOutput>> Plot<S> for ScriptPlot<'_> {
         let text = self
             .visible()
             .filter_map(|plot| {
-                Self::value(output, &plot.id).map(|value| format!("{}: {value}", plot.label))
+                output
+                    .plots
+                    .iter()
+                    .find(|value| value.id == plot.id)
+                    .and_then(|p| p.value.as_float())
+                    .map(|value| {
+                        format!("{}: {}", plot.label, data::util::format_with_commas(value))
+                    })
             })
             .collect::<Vec<_>>()
             .join("\n");
@@ -215,5 +278,46 @@ impl<S: Series<Y = FrameOutput>> Plot<S> for ScriptPlot<'_> {
     fn is_point_valid(&self, output: &FrameOutput) -> bool {
         self.visible()
             .any(|plot| Self::value(output, &plot.id).is_some())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indicator_engine::{PlotOutput, Value};
+    use std::collections::BTreeMap;
+    #[test]
+    fn independent_change_bars_do_not_flatten_the_cumulative_line() {
+        let series = ScriptedSeries::new(ScriptKind::Cvd);
+        let plot = ScriptPlot {
+            plots: series.plots(),
+        };
+        let output = |value, change| FrameOutput {
+            plots: vec![
+                PlotOutput {
+                    id: "value".into(),
+                    value: Value::Float(value),
+                    color: None,
+                },
+                PlotOutput {
+                    id: "change".into(),
+                    value: Value::Float(change),
+                    color: None,
+                },
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let values: BTreeMap<exchange::UnixMs, FrameOutput> = [
+            (0.into(), output(1000.0, 5.0)),
+            (1.into(), output(1003.0, -2.0)),
+        ]
+        .into_iter()
+        .collect();
+        let (min, max) = plot.y_extents(&&values, 0..=1).unwrap();
+        assert!(min > 999.0 && max < 1004.0);
+        let descriptor = series.plots().iter().find(|p| p.id == "change").unwrap();
+        let (min, max) = plot_extents(std::iter::once(descriptor), &&values, 0..=1).unwrap();
+        assert!(min < -2.0 && max > 5.0);
     }
 }

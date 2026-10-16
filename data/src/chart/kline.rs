@@ -813,7 +813,6 @@ pub struct Config {
     /// Settings owned by the VWAP overlay indicator.
     pub vwap: VwapConfig,
     /// Settings owned by the Smart Money Concepts overlay indicator.
-    pub smc: SmcConfig,
     /// Settings owned by the CVD panel indicator.
     pub cvd: CvdConfig,
     /// Inputs evaluated by the upstream indicator engine.
@@ -836,7 +835,6 @@ impl Default for Config {
             volume_bubbles: VolumeBubbleConfig::default(),
             session_volume_profile: SessionVolumeProfileConfig::default(),
             vwap: VwapConfig::default(),
-            smc: SmcConfig::default(),
             cvd: CvdConfig::default(),
             scripted: scripted::ScriptedConfig::default(),
             tpo: tpo::TpoConfig::default(),
@@ -872,66 +870,11 @@ pub struct IndicatorConfigs {
     pub gex_levels: crate::chart::gex::GexLevelsConfig,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
+/// Upstream CVD inputs. Legacy candle/reset fields are intentionally ignored.
+#[derive(Debug, Default, Copy, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CvdConfig {
-    pub render_style: CvdRenderStyle,
-    pub candle_width_percent: f32,
-    pub show_wicks: bool,
-    pub line_width: f32,
-    pub reset: CvdReset,
-}
-
-impl Default for CvdConfig {
-    fn default() -> Self {
-        Self {
-            render_style: CvdRenderStyle::Candlesticks,
-            candle_width_percent: 70.0,
-            show_wicks: false,
-            line_width: 1.0,
-            reset: CvdReset::DailyUtc,
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
-pub enum CvdReset {
-    #[default]
-    DailyUtc,
-    Continuous,
-}
-
-impl CvdReset {
-    pub const ALL: [Self; 2] = [Self::DailyUtc, Self::Continuous];
-}
-
-impl std::fmt::Display for CvdReset {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::DailyUtc => "Daily UTC",
-            Self::Continuous => "Continuous",
-        })
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, Deserialize, Serialize)]
-pub enum CvdRenderStyle {
-    Line,
-    #[default]
-    Candlesticks,
-}
-
-impl CvdRenderStyle {
-    pub const ALL: [Self; 2] = [Self::Candlesticks, Self::Line];
-}
-
-impl std::fmt::Display for CvdRenderStyle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Line => "Line",
-            Self::Candlesticks => "Candlesticks",
-        })
-    }
+    pub show_change_bars: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
@@ -952,53 +895,6 @@ impl Default for VwapConfig {
             show_bands: true,
             band_multiplier: 1.0,
             show_labels: true,
-        }
-    }
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Deserialize, Serialize)]
-#[serde(default)]
-pub struct SmcConfig {
-    /// Lookback period for swing detection
-    pub swing_length: i32,
-    /// Display swing structure (BOS/CHoCH)
-    pub show_swing_structure: bool,
-    /// Display internal structure (smaller lookback)
-    pub show_internal_structure: bool,
-    /// Display order blocks
-    pub show_swing_order_blocks: bool,
-    pub show_internal_order_blocks: bool,
-    /// Number of order blocks to show
-    pub order_blocks_count: i32,
-    /// Display equal highs/lows
-    pub show_equal_highs_lows: bool,
-    /// Bars confirmation for equal highs/lows
-    pub equal_highs_lows_length: i32,
-    /// Sensitivity threshold for equal highs/lows
-    pub equal_highs_lows_threshold: f32,
-    /// Display fair value gaps
-    pub show_fair_value_gaps: bool,
-    /// Display premium/discount zones
-    pub show_premium_discount_zones: bool,
-    /// Display trailing strong/weak high/low
-    pub show_strong_weak_high_low: bool,
-}
-
-impl Default for SmcConfig {
-    fn default() -> Self {
-        Self {
-            swing_length: 50,
-            show_swing_structure: true,
-            show_internal_structure: true,
-            show_swing_order_blocks: true,
-            show_internal_order_blocks: true,
-            order_blocks_count: 5,
-            show_equal_highs_lows: true,
-            equal_highs_lows_length: 3,
-            equal_highs_lows_threshold: 0.1,
-            show_fair_value_gaps: false,
-            show_premium_discount_zones: false,
-            show_strong_weak_high_low: true,
         }
     }
 }

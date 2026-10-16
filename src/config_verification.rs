@@ -76,6 +76,9 @@ fn without_unsupported_sources(value: &mut Value) {
             for (key, value) in fields {
                 if let Some(entries) = value.as_array_mut() {
                     match key.as_str() {
+                        "indicators" => {
+                            entries.retain(|entry| entry.as_str() != Some("SmartMoney"))
+                        }
                         "stream_type" => entries.retain(|entry| {
                             serde_json::from_value::<PersistStreamKind>(entry.clone()).is_ok()
                         }),
@@ -121,6 +124,7 @@ fn load(path: &Path) -> data::State {
                     "dropped unsupported stream"
                         | "dropped unsupported favorite ticker"
                         | "dropped unsupported exchange"
+                        | "dropped unknown kline indicator"
                         | "main window position was invalid or off-screen; opening centered"
                 )),
                 "unexpected fixture recovery: {warnings:?}"
@@ -361,4 +365,61 @@ fn render_saved_layouts_and_upstream_indicator_configuration() {
             println!("Rendered {prefix} layout {index}");
         }
     }
+}
+
+#[test]
+#[ignore = "requires local configuration copies and GPU; set FLOWSURFACE_CONFIG_FIXTURES"]
+fn render_existing_dashboard_with_window_level_indicator_browser() {
+    let directory = std::path::PathBuf::from(
+        std::env::var_os("FLOWSURFACE_CONFIG_FIXTURES").expect("isolated fixture directory"),
+    );
+    let state = load(&directory.join("saved-state.json.fixture.json"));
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let _guard = runtime.enter();
+    let mut renderer = runtime
+        .block_on(<iced::Renderer as Headless>::new(
+            iced::advanced::renderer::Settings {
+                default_text_size: iced::Pixels(12.0),
+                ..Default::default()
+            },
+            Some("wgpu"),
+        ))
+        .expect("GPU renderer");
+    {
+        let mut fonts = iced_wgpu::graphics::text::font_system().write().unwrap();
+        fonts.load_font(std::borrow::Cow::Borrowed(crate::style::AZERET_MONO_BYTES));
+        fonts.load_font(std::borrow::Cow::Borrowed(crate::style::ICONS_BYTES));
+    }
+    let layout = &state.layout_manager.layouts[0];
+    let mut dashboard = layout::dashboard_from_data(layout.dashboard.clone(), uuid::Uuid::new_v4());
+    prime_charts(&mut dashboard);
+    let (_, pane) = dashboard
+        .panes
+        .iter_mut()
+        .find(|(_, pane)| {
+            matches!(
+                pane.content,
+                Content::Kline {
+                    kind: data::chart::KlineChartKind::Candles,
+                    ..
+                }
+            )
+        })
+        .unwrap();
+    pane.update(crate::screen::dashboard::pane::Event::ShowModal(
+        crate::modal::pane::Modal::Indicators,
+    ));
+    pane.indicator_menu
+        .update(&crate::indicators::Action::Select(
+            data::chart::indicator::KlineIndicator::CumulativeDelta.into(),
+        ));
+    render_dashboard(
+        &dashboard,
+        &state,
+        &mut renderer,
+        &directory
+            .parent()
+            .unwrap()
+            .join("dashboard-indicators-wide-1600x1000.rgba"),
+    );
 }

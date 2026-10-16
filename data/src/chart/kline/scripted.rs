@@ -1,6 +1,6 @@
 //! Bridge to the upstream indicator engine. The last bar is always a preview:
 //! repeated live updates must not advance EMA/RSI state more than once per bar.
-use super::KlineDataPoint;
+use super::{CvdConfig, KlineDataPoint, TradeCoverage};
 use crate::chart::{BasisSeries, PlotData};
 use exchange::Kline;
 use indicator_engine::{
@@ -19,9 +19,10 @@ pub enum ScriptKind {
     Atr,
     Macd,
     Adx,
+    Cvd,
 }
 
-static PROGRAMS: LazyLock<[Arc<CompiledIndicator>; 4]> = LazyLock::new(|| {
+static PROGRAMS: LazyLock<[Arc<CompiledIndicator>; 5]> = LazyLock::new(|| {
     [
         (
             "rsi.ind",
@@ -38,6 +39,10 @@ static PROGRAMS: LazyLock<[Arc<CompiledIndicator>; 4]> = LazyLock::new(|| {
         (
             "adx-dmi.ind",
             include_str!("../../../../indicators/sources/adx-dmi.ind"),
+        ),
+        (
+            "cumulative-volume-delta.ind",
+            include_str!("../../../indicators/sources/cumulative-volume-delta.ind"),
         ),
     ]
     .map(|(name, source)| {
@@ -78,7 +83,7 @@ impl ScriptKind {
         Arc::clone(&PROGRAMS[self as usize])
     }
 
-    fn config(self, config: ScriptedConfig) -> IndicatorConfig {
+    fn config(self, config: ScriptedConfig, cvd: CvdConfig) -> IndicatorConfig {
         let int = |n: u16| InputValue::Int(i64::from(n));
         match self {
             Self::Rsi => {
@@ -90,6 +95,8 @@ impl ScriptKind {
             Self::Adx => {
                 IndicatorConfig::default().with("period", int(config.adx_period.clamp(2, 200)))
             }
+            Self::Cvd => IndicatorConfig::default()
+                .with("show_change_bars", InputValue::Bool(cvd.show_change_bars)),
             Self::Macd => IndicatorConfig::default()
                 .with("fast_period", int(config.macd_fast.clamp(1, 200)))
                 .with("slow_period", int(config.macd_slow.clamp(2, 500)))
@@ -101,6 +108,8 @@ impl ScriptKind {
 pub struct ScriptedSeries {
     kind: ScriptKind,
     config: ScriptedConfig,
+    cvd: CvdConfig,
+    pub directional_volume_available: bool,
     instance: IndicatorInstance,
     closed: Vec<(u64, Kline)>,
     basis: TimeOrTick,
@@ -116,11 +125,13 @@ impl ScriptedSeries {
         let config = ScriptedConfig::default();
         let instance = kind
             .program()
-            .instantiate(kind.config(config))
+            .instantiate(kind.config(config, CvdConfig::default()))
             .expect("bundled indicator defaults are valid");
         Self {
             kind,
             config,
+            cvd: CvdConfig::default(),
+            directional_volume_available: false,
             instance,
             closed: Vec::new(),
             basis: TimeOrTick::Time,
@@ -136,11 +147,36 @@ impl ScriptedSeries {
         }
     }
 
+    pub fn is_cvd(&self) -> bool {
+        self.kind == ScriptKind::Cvd
+    }
+    pub fn configure_cvd(&mut self, config: CvdConfig) {
+        if self.is_cvd() && self.cvd != config {
+            self.cvd = config;
+            self.reset();
+        }
+    }
+    fn source_bar(&self, dp: &KlineDataPoint, current: bool) -> Kline {
+        let mut bar = dp.kline;
+        if self.is_cvd()
+            && bar.volume.buy_sell().is_none()
+            && !dp.footprint.trades.is_empty()
+            && (dp.trade_coverage == TradeCoverage::Complete || current)
+        {
+            let (buy, sell) = dp.footprint.trades.values().fold(
+                (exchange::unit::Qty::ZERO, exchange::unit::Qty::ZERO),
+                |(buy, sell), trades| (buy + trades.buy_qty, sell + trades.sell_qty),
+            );
+            bar.volume = exchange::Volume::BuySell(buy, sell);
+        }
+        bar
+    }
     fn reset(&mut self) {
         self.instance
-            .reset(self.kind.config(self.config))
+            .reset(self.kind.config(self.config, self.cvd))
             .expect("clamped bundled inputs are valid");
         self.closed.clear();
+        self.directional_volume_available = false;
         self.output = match self.basis {
             TimeOrTick::Time => BasisSeries::Time(BTreeMap::new()),
             TimeOrTick::Tick => BasisSeries::Tick(BTreeMap::new()),
@@ -150,14 +186,19 @@ impl ScriptedSeries {
 
     pub fn sync(&mut self, source: &PlotData<KlineDataPoint>) {
         let (basis, bars): (_, Vec<_>) = match source {
-            PlotData::TimeBased(series) => (
-                TimeOrTick::Time,
-                series
-                    .datapoints
-                    .iter()
-                    .map(|(time, dp)| (time.as_u64(), dp.kline))
-                    .collect(),
-            ),
+            PlotData::TimeBased(series) => {
+                let latest = series.datapoints.last_key_value().map(|(time, _)| *time);
+                (
+                    TimeOrTick::Time,
+                    series
+                        .datapoints
+                        .iter()
+                        .map(|(&time, dp)| {
+                            (time.as_u64(), self.source_bar(dp, Some(time) == latest))
+                        })
+                        .collect(),
+                )
+            }
             PlotData::TickBased(series) => (
                 TimeOrTick::Tick,
                 series
@@ -186,6 +227,8 @@ impl ScriptedSeries {
             self.reset();
             return;
         }
+        self.directional_volume_available =
+            bars.iter().any(|(_, bar)| bar.volume.buy_sell().is_some());
         for (index, &(key, bar)) in bars.iter().enumerate().skip(self.closed.len()) {
             let (buy_qty, sell_qty) = bar
                 .volume
@@ -264,6 +307,7 @@ mod tests {
     fn assert_matches_replay(series: &ScriptedSeries, bars: &[(u64, Kline)]) {
         let mut replay = ScriptedSeries::new(series.kind);
         replay.configure(series.config);
+        replay.configure_cvd(series.cvd);
         replay.sync_bars(series.basis, bars);
         assert!(series.error.is_none(), "{:?}", series.error);
         match (&series.output, &replay.output) {
@@ -320,5 +364,74 @@ mod tests {
         assert_matches_replay(&series, &bars);
         series.sync_bars(TimeOrTick::Tick, &[]);
         assert!(matches!(&series.output, BasisSeries::Tick(v) if v.is_empty()));
+    }
+    fn cvd_value(series: &ScriptedSeries, key: u64, plot: &str) -> Option<f64> {
+        let output = match &series.output {
+            BasisSeries::Time(values) => values.get(&key.into()),
+            BasisSeries::Tick(values) => values.get(&key),
+        }
+        .unwrap();
+        output
+            .plots
+            .iter()
+            .find(|p| p.id == plot)
+            .unwrap()
+            .value
+            .as_float()
+    }
+    #[test]
+    fn upstream_cvd_is_continuous_across_midnight_and_previews_do_not_accumulate() {
+        let mut source = bars()[..3].to_vec();
+        for (index, (key, bar)) in source.iter_mut().enumerate() {
+            *key = 86_340_000 + index as u64 * 60_000;
+            bar.time = (*key).into();
+            let (buy, sell) = [(8.0, 3.0), (2.0, 7.0), (10.0, 1.0)][index];
+            bar.volume = Volume::BuySell(Qty::from_f64(buy), Qty::from_f64(sell));
+        }
+        let mut series = ScriptedSeries::new(ScriptKind::Cvd);
+        series.configure_cvd(CvdConfig {
+            show_change_bars: true,
+        });
+        series.sync_bars(TimeOrTick::Time, &source);
+        for (index, expected) in [5.0, 0.0, 9.0].iter().enumerate() {
+            assert_eq!(
+                cvd_value(&series, source[index].0, "value"),
+                Some(*expected)
+            );
+        }
+        assert_eq!(cvd_value(&series, source[2].0, "change"), Some(9.0));
+        source[2].1.volume = Volume::BuySell(Qty::from_f64(4.0), Qty::from_f64(3.0));
+        for _ in 0..4 {
+            series.sync_bars(TimeOrTick::Time, &source);
+            assert_eq!(cvd_value(&series, source[2].0, "value"), Some(1.0));
+        }
+        source[0].1.volume = Volume::BuySell(Qty::from_f64(3.0), Qty::from_f64(8.0));
+        series.sync_bars(TimeOrTick::Time, &source);
+        assert_eq!(cvd_value(&series, source[2].0, "value"), Some(-9.0));
+        assert_matches_replay(&series, &source);
+        series.sync_bars(TimeOrTick::Tick, &source);
+        assert_matches_replay(&series, &source);
+    }
+    #[test]
+    fn cvd_missing_directional_volume_stays_missing_and_change_bars_default_off() {
+        let mut source = bars()[..3].to_vec();
+        let mut series = ScriptedSeries::new(ScriptKind::Cvd);
+        series.sync_bars(TimeOrTick::Time, &source);
+        assert!(!series.directional_volume_available);
+        assert_eq!(cvd_value(&series, source[0].0, "value"), None);
+        source[0].1.volume = Volume::BuySell(Qty::from_f64(5.0), Qty::from_f64(2.0));
+        source[2].1.volume = Volume::BuySell(Qty::from_f64(1.0), Qty::from_f64(3.0));
+        series.sync_bars(TimeOrTick::Time, &source);
+        assert_eq!(cvd_value(&series, source[0].0, "value"), Some(3.0));
+        assert_eq!(cvd_value(&series, source[1].0, "value"), None);
+        assert_eq!(cvd_value(&series, source[2].0, "value"), Some(1.0));
+        assert_eq!(cvd_value(&series, source[2].0, "change"), None);
+        series.configure_cvd(CvdConfig {
+            show_change_bars: true,
+        });
+        series.sync_bars(TimeOrTick::Time, &source);
+        assert_eq!(cvd_value(&series, source[2].0, "change"), Some(-2.0));
+        series.sync_bars(TimeOrTick::Time, &source[1..]);
+        assert_matches_replay(&series, &source[1..]);
     }
 }

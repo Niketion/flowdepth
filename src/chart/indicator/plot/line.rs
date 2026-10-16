@@ -96,28 +96,6 @@ impl<V, T> LinePlot<V, T> {
         self
     }
 
-    /// Set a predicate that decides whether a datapoint is "valid".
-    /// Invalid points break the line (no connection to neighbours)
-    /// and show `invalid_point_message` if one is configured.
-    /// When `None` (the default), every point is considered valid.
-    pub fn valid_when<F>(mut self, predicate: F) -> Self
-    where
-        F: Fn(&T) -> bool + 'static,
-    {
-        self.is_valid = Some(Box::new(predicate));
-        self
-    }
-
-    /// Set a message to show in the tooltip area when a point is invalid
-    /// (according to [`valid_when`]).  When not set the tooltip is hidden
-    /// entirely for invalid points.
-    ///
-    /// [`valid_when`]: Self::valid_when
-    pub fn invalid_point_message(mut self, msg: impl Into<String>) -> Self {
-        self.invalid_point_message = Some(msg.into());
-        self
-    }
-
     pub fn with_tooltip<F>(mut self, tooltip: F) -> Self
     where
         F: Fn(&T, Option<&T>) -> PlotTooltip + 'static,

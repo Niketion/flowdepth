@@ -10,7 +10,6 @@ use exchange::{Kline, Timeframe, Trade, UnixMs};
 use super::plot::AnySeries;
 
 pub mod bar_analysis;
-pub mod cumulative_delta;
 pub mod open_interest;
 pub mod scripted;
 pub mod volume;
@@ -135,35 +134,13 @@ pub struct FetchCtx<'a> {
 }
 
 pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
-    match which {
-        KlineIndicator::Volume => Box::new(super::kline::volume::VolumeIndicator::new()),
-        KlineIndicator::BarAnalysis => {
-            Box::new(super::kline::bar_analysis::BarAnalysisIndicator::new())
-        }
-        KlineIndicator::CumulativeDelta => {
-            Box::new(super::kline::cumulative_delta::CumulativeDeltaIndicator::new())
-        }
-        KlineIndicator::OpenInterest => {
-            Box::new(super::kline::open_interest::OpenInterestIndicator::new())
-        }
-        KlineIndicator::Rsi => Box::new(scripted::ScriptedIndicator::new(
-            data::chart::kline::scripted::ScriptKind::Rsi,
-        )),
-        KlineIndicator::Atr => Box::new(scripted::ScriptedIndicator::new(
-            data::chart::kline::scripted::ScriptKind::Atr,
-        )),
-        KlineIndicator::Macd => Box::new(scripted::ScriptedIndicator::new(
-            data::chart::kline::scripted::ScriptKind::Macd,
-        )),
-        KlineIndicator::Adx => Box::new(scripted::ScriptedIndicator::new(
-            data::chart::kline::scripted::ScriptKind::Adx,
-        )),
-        KlineIndicator::VolumeBubbles
-        | KlineIndicator::SessionVolumeProfile
-        | KlineIndicator::Vwap
-        | KlineIndicator::GexLevels
-        | KlineIndicator::SmartMoney
-        | KlineIndicator::Tpo => Box::new(OverlayIndicator),
+    use data::chart::indicator::catalog::Runtime;
+    match which.definition().runtime {
+        Runtime::Volume => Box::new(volume::VolumeIndicator::new()),
+        Runtime::BarAnalysis => Box::new(bar_analysis::BarAnalysisIndicator::new()),
+        Runtime::OpenInterest => Box::new(open_interest::OpenInterestIndicator::new()),
+        Runtime::Scripted(kind) => Box::new(scripted::ScriptedIndicator::new(kind)),
+        Runtime::Overlay => Box::new(OverlayIndicator),
     }
 }
 

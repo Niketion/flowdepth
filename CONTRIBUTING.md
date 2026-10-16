@@ -40,6 +40,10 @@ cargo test --workspace --all-targets --all-features --locked
 
 Use `cargo fmt --all` to apply formatting locally.
 
+## Indicator development
+
+See [Indicator modules](docs/indicators.md) for catalog registration, runtime adapters, independent settings editors and the optional GPU interaction tests.
+
 ## Changes, commits, and pull requests
 
 - Keep each commit focused and use a short, imperative subject such as `Fix reconnect status reporting`.

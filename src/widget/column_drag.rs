@@ -317,12 +317,24 @@ where
 
     fn operate(
         &mut self,
-        _tree: &mut Tree,
+        tree: &mut Tree,
         layout: Layout<'_>,
-        _renderer: &Renderer,
+        renderer: &Renderer,
         operation: &mut dyn Operation,
     ) {
-        operation.container(None, layout.bounds())
+        operation.container(None, layout.bounds());
+        operation.traverse(&mut |operation| {
+            for ((child, state), layout) in self
+                .children
+                .iter_mut()
+                .zip(&mut tree.children)
+                .zip(layout.children())
+            {
+                child
+                    .as_widget_mut()
+                    .operate(state, layout, renderer, operation);
+            }
+        });
     }
 
     fn update(

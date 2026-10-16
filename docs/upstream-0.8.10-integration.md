@@ -22,12 +22,12 @@ This is a **selective source integration**, not a full merge of the new chart ap
 
 | Area | Kept implementation and reason |
 | --- | --- |
-| CVD | Flowdepth. Preserves daily/continuous reset, candle/line display, directional-volume availability and real intrabar high/low only when complete trade sequences prove them. The generic upstream source is not substituted for this behavior. |
+| CVD | Superseded by the subsequent indicator-module update: use the unchanged upstream CVD script, continuous accumulation and optional change bars with an independent scale. Legacy candle/reset controls are ignored on load. See `indicators.md`. |
 | Footprint / bar analysis | Flowdepth. Preserves table presentation, directional clusters, summaries, imbalance controls and raw-trade coverage. The new indicator engine is available without replacing this specialized table renderer. |
 | Volume bubbles / big trades | Flowdepth adaptive clustering, percentile thresholds, stable identities, price-response coloring, historical summaries and retention. Upstream Big Trades is not an equivalent replacement. |
 | Session and fixed-range volume profiles | Flowdepth. Preserves partial-coverage feedback, cached execution data, independent drawing configuration and hourly retention fixes. Upstream profile calculation supports the new composition model and would require a dedicated conversion of these semantics. |
 | VWAP | Flowdepth native overlay and its history/coverage handling. Source-defined VWAP is retained in the upstream source set for CLI validation; it is not presented as a second competing GUI VWAP. |
-| GEX, Derive maker flow, options providers, Smart Money Concepts, News Tracker | Flowdepth. These have no complete upstream replacement in the reviewed changes. |
+| GEX, Derive maker flow, options providers, News Tracker | Flowdepth. These have no complete upstream replacement in the reviewed changes. Smart Money Concepts was subsequently removed at the user's request. |
 | Market-data ingestion | Combined. Keep trade IDs, deduplication, invalid-execution filtering, order-flow events, MEXC recent trades, extended metadata timeout and cache invalidation. Add upstream venue-aware candle pages, API status/row validation and Arrow cursor advancement. |
 | Theme, fonts, toolbar, templates and startup | Flowdepth. Preserve its asset/codepoint mappings, GEX/news controls, startup feedback and layout copy/import/export. |
 

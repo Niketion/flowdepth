@@ -1,3 +1,5 @@
+pub mod catalog;
+
 use std::fmt::{self, Debug, Display};
 
 use enum_map::Enum;
@@ -26,7 +28,6 @@ pub enum KlineIndicator {
     SessionVolumeProfile,
     Vwap,
     GexLevels,
-    SmartMoney,
     Rsi,
     Atr,
     Macd,
@@ -36,66 +37,17 @@ pub enum KlineIndicator {
 
 impl Indicator for KlineIndicator {
     fn for_market(market: MarketKind) -> &'static [Self] {
-        match market {
-            MarketKind::Spot => &Self::FOR_SPOT,
-            MarketKind::LinearPerps | MarketKind::InversePerps => &Self::FOR_PERPS,
-        }
+        catalog::for_market(market)
     }
 }
 
 impl KlineIndicator {
-    // Indicator togglers on UI menus depend on these arrays.
-    // Every variant needs to be in either SPOT, PERPS or both.
-    /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 13] = [
-        KlineIndicator::Volume,
-        KlineIndicator::BarAnalysis,
-        KlineIndicator::CumulativeDelta,
-        KlineIndicator::VolumeBubbles,
-        KlineIndicator::SessionVolumeProfile,
-        KlineIndicator::Vwap,
-        KlineIndicator::GexLevels,
-        KlineIndicator::SmartMoney,
-        KlineIndicator::Rsi,
-        KlineIndicator::Atr,
-        KlineIndicator::Macd,
-        KlineIndicator::Adx,
-        KlineIndicator::Tpo,
-    ];
-    /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 14] = [
-        KlineIndicator::Volume,
-        KlineIndicator::BarAnalysis,
-        KlineIndicator::CumulativeDelta,
-        KlineIndicator::OpenInterest,
-        KlineIndicator::VolumeBubbles,
-        KlineIndicator::SessionVolumeProfile,
-        KlineIndicator::Vwap,
-        KlineIndicator::GexLevels,
-        KlineIndicator::SmartMoney,
-        KlineIndicator::Rsi,
-        KlineIndicator::Atr,
-        KlineIndicator::Macd,
-        KlineIndicator::Adx,
-        KlineIndicator::Tpo,
-    ];
-
-    pub fn placement(self) -> IndicatorPlacement {
-        if matches!(
-            self,
-            Self::VolumeBubbles
-                | Self::SessionVolumeProfile
-                | Self::Vwap
-                | Self::GexLevels
-                | Self::SmartMoney
-                | Self::Tpo
-        ) {
-            IndicatorPlacement::Overlay
-        } else {
-            IndicatorPlacement::Panel
-        }
+    pub fn definition(self) -> &'static catalog::Definition {
+        catalog::definition(self)
     }
-
+    pub fn placement(self) -> IndicatorPlacement {
+        self.definition().placement
+    }
     pub fn is_overlay(self) -> bool {
         self.placement() == IndicatorPlacement::Overlay
     }
@@ -113,23 +65,8 @@ impl KlineIndicator {
 }
 
 impl Display for KlineIndicator {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            KlineIndicator::Volume => write!(f, "Volume"),
-            KlineIndicator::BarAnalysis => write!(f, "Bar Analysis"),
-            KlineIndicator::CumulativeDelta => write!(f, "CVD"),
-            KlineIndicator::OpenInterest => write!(f, "Open Interest"),
-            KlineIndicator::VolumeBubbles => write!(f, "Volume Bubbles"),
-            KlineIndicator::SessionVolumeProfile => write!(f, "Session Volume Profile"),
-            KlineIndicator::Vwap => write!(f, "VWAP"),
-            KlineIndicator::GexLevels => write!(f, "GEX Overlay"),
-            KlineIndicator::SmartMoney => write!(f, "Smart Money Concepts"),
-            KlineIndicator::Rsi => write!(f, "RSI"),
-            KlineIndicator::Atr => write!(f, "ATR"),
-            KlineIndicator::Macd => write!(f, "MACD"),
-            KlineIndicator::Adx => write!(f, "ADX / DMI"),
-            KlineIndicator::Tpo => write!(f, "TPO"),
-        }
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.definition().name)
     }
 }
 
@@ -164,7 +101,7 @@ impl Display for HeatmapIndicator {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Temporary workaround,
 /// represents any indicator type in the UI
 pub enum UiIndicator {
@@ -181,15 +118,5 @@ impl From<KlineIndicator> for UiIndicator {
 impl From<HeatmapIndicator> for UiIndicator {
     fn from(h: HeatmapIndicator) -> Self {
         UiIndicator::Heatmap(h)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn smart_money_uses_ohlc_without_requiring_trades() {
-        assert!(!KlineIndicator::SmartMoney.requires_trades(Exchange::BinanceLinear));
     }
 }

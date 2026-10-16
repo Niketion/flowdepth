@@ -6,6 +6,7 @@ mod chart;
 mod config_verification;
 mod connector;
 mod debug_terminal;
+mod indicators;
 mod layout;
 mod logger;
 mod market_service;

@@ -893,6 +893,22 @@ impl Dashboard {
                     return (self.merge_pane(main_window), None);
                 }
                 pane::Message::PaneEvent(pane, local) => {
+                    if matches!(
+                        &local,
+                        pane::Event::ShowModal(crate::modal::pane::Modal::Indicators)
+                    ) {
+                        self.focus = Some((window, pane));
+                        for (other_window, other_pane, state) in
+                            self.iter_all_panes_mut(main_window.id)
+                        {
+                            if other_window == window
+                                && other_pane != pane
+                                && state.modal == Some(crate::modal::pane::Modal::Indicators)
+                            {
+                                state.modal = None;
+                            }
+                        }
+                    }
                     if let Some(state) = self.get_mut_pane(main_window.id, window, pane) {
                         let Some(effect) = state.update(local) else {
                             return (Task::none(), None);
@@ -1255,7 +1271,8 @@ impl Dashboard {
         .style(style::pane_grid)
         .into();
 
-        pane_grid.map(move |message| Message::Pane(main_window.id, message))
+        crate::indicators::overlay(pane_grid, &self.panes)
+            .map(move |message| Message::Pane(main_window.id, message))
     }
 
     pub fn view_window<'a>(
@@ -1288,7 +1305,8 @@ impl Dashboard {
             .height(Length::Fill)
             .padding(8);
 
-            Element::new(content).map(move |message| Message::Pane(window, message))
+            crate::indicators::overlay(Element::new(content), state)
+                .map(move |message| Message::Pane(window, message))
         } else {
             Element::new(center("No pane found for window"))
                 .map(move |message| Message::Pane(window, message))

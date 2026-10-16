@@ -9,7 +9,6 @@ use std::collections::BTreeMap;
 use std::ops::RangeInclusive;
 
 pub mod bar;
-pub mod candlestick;
 pub mod line;
 
 pub trait Series {

@@ -621,26 +621,10 @@ fn sanitize_pane(value: &mut serde_json::Value, warnings: &mut Vec<String>) {
                 .get_mut("KlineChart")
                 .and_then(serde_json::Value::as_object_mut)
             {
-                sanitize_vec_tagged_enum(
+                sanitize_deserializable_vec::<crate::chart::indicator::KlineIndicator>(
                     pane.get_mut("indicators"),
-                    &[
-                        "Volume",
-                        "BarAnalysis",
-                        "CumulativeDelta",
-                        "OpenInterest",
-                        "VolumeBubbles",
-                        "SessionVolumeProfile",
-                        "Vwap",
-                        "GexLevels",
-                        "SmartMoney",
-                        "Rsi",
-                        "Atr",
-                        "Macd",
-                        "Adx",
-                        "Tpo",
-                    ],
                     warnings,
-                    "kline indicator",
+                    "unknown kline indicator",
                 );
                 sanitize_streams(pane.get_mut("stream_type"), warnings);
                 sanitize_kline_kind(
@@ -1364,6 +1348,53 @@ mod tests {
             }
             _ => panic!("expected recovered state"),
         }
+    }
+
+    #[test]
+    fn removing_smc_and_legacy_cvd_controls_preserves_other_chart_settings() {
+        use crate::chart::{indicator::KlineIndicator, kline::Config};
+        let mut pane = serde_json::json!({"KlineChart":{
+            "layout":{"splits":[0.75],"autoscale":"FitToVisible"},"kind":"Candles","drawings":[],
+            "stream_type":[{"Kline":{"ticker":"BinanceLinear:BTCUSDT","timeframe":"M5"}}],
+            "settings":{"selected_basis":{"Time":"M5"},"visual_config":{"Kline":{
+                "data_labels_always_visible":true,"smc":{"swing_length":40},
+                "cvd":{"render_style":"Candlesticks","reset":"DailyUtc","show_wicks":true,"line_width":2.0},
+                "scripted":{"rsi_period":9}
+            }}},"indicators":["Volume","SmartMoney","CumulativeDelta","Rsi"],"link_group":null
+        }});
+        let mut warnings = Vec::new();
+        sanitize_pane(&mut pane, &mut warnings);
+        assert_eq!(warnings, vec!["dropped unknown kline indicator"]);
+        let crate::Pane::KlineChart {
+            indicators,
+            settings,
+            stream_type,
+            layout,
+            ..
+        } = serde_json::from_value(pane).unwrap()
+        else {
+            panic!("chart lost")
+        };
+        assert_eq!(
+            indicators,
+            vec![
+                KlineIndicator::Volume,
+                KlineIndicator::CumulativeDelta,
+                KlineIndicator::Rsi
+            ]
+        );
+        assert_eq!(layout.splits, vec![0.75]);
+        assert_eq!(stream_type.len(), 1);
+        let Some(crate::layout::pane::VisualConfig::Kline(config)) = settings.visual_config else {
+            panic!("chart configuration lost")
+        };
+        assert!(config.data_labels_always_visible);
+        assert_eq!(config.scripted.rsi_period, 9);
+        assert!(!config.cvd.show_change_bars);
+        let saved = serde_json::to_value(config).unwrap();
+        assert!(saved.get("smc").is_none());
+        assert!(saved["cvd"].get("reset").is_none());
+        assert_eq!(serde_json::from_value::<Config>(saved).unwrap(), config);
     }
 
     #[test]

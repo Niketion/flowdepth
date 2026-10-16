@@ -119,8 +119,8 @@ pub enum Event {
     ChartInteraction(super::chart::Message),
     PanelInteraction(super::panel::Message),
     ToggleIndicator(UiIndicator),
+    IndicatorMenu(crate::indicators::Action),
     DeleteNotification(usize),
-    ReorderIndicator(column_drag::DragEvent),
     ClusterKindSelected(data::chart::kline::ClusterKind),
     ClusterScalingSelected(data::chart::kline::ClusterScaling),
     StudyConfigurator(modal::pane::settings::study::StudyMessage),
@@ -181,6 +181,7 @@ impl std::fmt::Display for GexChartAsset {
 pub struct State {
     id: uuid::Uuid,
     pub modal: Option<Modal>,
+    pub indicator_menu: crate::indicators::State,
     pub content: Content,
     pub settings: Settings,
     pub notifications: Vec<Toast>,
@@ -1167,7 +1168,6 @@ impl State {
                 self.compose_stack_view(
                     base,
                     id,
-                    None,
                     compact_controls,
                     || column![].into(),
                     None,
@@ -1193,7 +1193,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         settings_modal,
                         Some(c.selected_tickers()),
@@ -1204,7 +1203,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         || column![].into(),
                         None,
@@ -1223,7 +1221,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         || column![].into(),
                         None,
@@ -1237,7 +1234,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         settings_modal,
                         None,
@@ -1248,7 +1244,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         || column![].into(),
                         None,
@@ -1268,7 +1263,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         settings_modal,
                         None,
@@ -1279,7 +1273,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         || column![].into(),
                         None,
@@ -1328,7 +1321,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         settings_modal,
                         None,
@@ -1339,7 +1331,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         || column![].into(),
                         None,
@@ -1398,21 +1389,9 @@ impl State {
                         )
                     };
 
-                    let indicator_modal = if self.modal == Some(Modal::Indicators) {
-                        Some(modal::indicators::view(
-                            id,
-                            self,
-                            indicators,
-                            self.stream_pair().map(|i| i.ticker.market_type()),
-                        ))
-                    } else {
-                        None
-                    };
-
                     self.compose_stack_view(
                         base,
                         id,
-                        indicator_modal,
                         compact_controls,
                         settings_modal,
                         None,
@@ -1423,7 +1402,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         || column![].into(),
                         None,
@@ -1499,23 +1477,9 @@ impl State {
                         )
                     };
 
-                    let indicator_modal = if self.modal == Some(Modal::Indicators) {
-                        Some(modal::indicators::view_kline(
-                            id,
-                            self,
-                            indicators,
-                            self.stream_pair().map(|i| i.ticker.market_type()),
-                            chart.visual_config(),
-                            chart.volume_bubble_qty_scale(),
-                        ))
-                    } else {
-                        None
-                    };
-
                     self.compose_stack_view(
                         base,
                         id,
-                        indicator_modal,
                         compact_controls,
                         settings_modal,
                         None,
@@ -1532,7 +1496,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         || column![].into(),
                         None,
@@ -1540,9 +1503,7 @@ impl State {
                     )
                 }
             }
-            Content::ShaderHeatmap {
-                chart, indicators, ..
-            } => {
+            Content::ShaderHeatmap { chart, .. } => {
                 if let Some(chart) = chart {
                     let base = HeatmapShader::view(chart, timezone).map(move |message| {
                         Message::PaneEvent(id, Event::HeatmapShaderInteraction(message))
@@ -1577,17 +1538,6 @@ impl State {
                         )
                     };
 
-                    let indicator_modal = if self.modal == Some(Modal::Indicators) {
-                        Some(modal::indicators::view(
-                            id,
-                            self,
-                            indicators,
-                            self.stream_pair().map(|i| i.ticker.market_type()),
-                        ))
-                    } else {
-                        None
-                    };
-
                     let modifiers = row![
                         basis_modifier(id, basis, modifier, kind),
                         ticksize_modifier(
@@ -1607,7 +1557,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        indicator_modal,
                         compact_controls,
                         settings_modal,
                         None,
@@ -1618,7 +1567,6 @@ impl State {
                     self.compose_stack_view(
                         base,
                         id,
-                        None,
                         compact_controls,
                         || column![].into(),
                         None,
@@ -2035,6 +1983,33 @@ impl State {
                 Content::TimeAndSales(Some(p)) => super::panel::update(p, msg),
                 _ => {}
             },
+            Event::IndicatorMenu(action) => {
+                use crate::indicators::Action;
+                match action {
+                    Action::Enable { indicator, enabled } => {
+                        if !crate::indicators::supports(self, indicator) {
+                            return None;
+                        }
+                        let selected = self.content.indicator_enabled(indicator);
+                        self.indicator_menu
+                            .update(&Action::Enable { indicator, enabled });
+                        if selected != enabled {
+                            return self.update(Event::ToggleIndicator(indicator));
+                        }
+                    }
+                    Action::ReorderPanels(event) => {
+                        if self.indicator_menu.can_reorder() {
+                            self.content.reorder_indicators(&event);
+                        }
+                    }
+                    Action::Select(indicator) => {
+                        if crate::indicators::supports(self, indicator) {
+                            self.indicator_menu.update(&Action::Select(indicator));
+                        }
+                    }
+                    other => self.indicator_menu.update(&other),
+                }
+            }
             Event::ToggleIndicator(ind) => {
                 let exchange = self.stream_pair().map(|ticker| ticker.exchange());
                 let refresh_streams = matches!(
@@ -2052,9 +2027,6 @@ impl State {
                 if idx < self.notifications.len() {
                     self.notifications.remove(idx);
                 }
-            }
-            Event::ReorderIndicator(e) => {
-                self.content.reorder_indicators(&e);
             }
             Event::ClusterKindSelected(kind) => {
                 if let Content::Kline {
@@ -2478,7 +2450,7 @@ impl State {
             )
         {
             buttons = buttons.push(button_with_tooltip(
-                icon_text(Icon::ChartOutline, 12),
+                crate::indicators::toolbar_icon(),
                 show_modal(Modal::Indicators),
                 Some("Indicators"),
                 tooltip_pos,
@@ -2539,7 +2511,6 @@ impl State {
         &'a self,
         base: Element<'a, Message>,
         pane: pane_grid::Pane,
-        indicator_modal: Option<Element<'a, Message>>,
         compact_controls: Option<Element<'a, Message>>,
         settings_modal: F,
         selected_tickers: Option<&'a [TickerInfo]>,
@@ -2638,13 +2609,7 @@ impl State {
                 padding::right(12).left(12),
                 Alignment::End,
             ),
-            Some(Modal::Indicators) => stack_modal(
-                base,
-                indicator_modal.unwrap_or_else(|| column![].into()),
-                on_blur,
-                padding::right(12).left(12),
-                Alignment::End,
-            ),
+            Some(Modal::Indicators) => base,
             Some(Modal::Controls) => stack_modal(
                 base,
                 if let Some(controls) = compact_controls {
@@ -2713,6 +2678,10 @@ impl State {
         }
 
         let focus_widget_id = match &requested_modal {
+            Modal::Indicators => {
+                self.indicator_menu.open();
+                Some(self.indicator_menu.search_id.clone())
+            }
             Modal::MiniTickersList(m) | Modal::GexLiquidityReference(m) => {
                 Some(m.search_box_id.clone())
             }
@@ -2858,6 +2827,7 @@ impl Default for State {
         Self {
             id: uuid::Uuid::new_v4(),
             modal: None,
+            indicator_menu: crate::indicators::State::default(),
             content: Content::Starter,
             settings: Settings::default(),
             streams: ResolvedStream::waiting(vec![]),
@@ -3216,19 +3186,21 @@ impl Content {
         }
     }
 
-    pub fn reorder_indicators(&mut self, event: &column_drag::DragEvent) {
-        match self {
-            Content::Heatmap { indicators, .. } => column_drag::reorder_vec(indicators, event),
-            Content::Kline { indicators, .. } => column_drag::reorder_vec(indicators, event),
-            Content::TimeAndSales(_)
-            | Content::Ladder(_)
-            | Content::Starter
-            | Content::Comparison(_)
-            | Content::Gex { .. }
-            | Content::News(_)
-            | Content::ShaderHeatmap { .. } => {
-                panic!("indicator reorder on {} pane", self)
+    pub fn indicator_enabled(&self, indicator: UiIndicator) -> bool {
+        match (self, indicator) {
+            (Content::Kline { indicators, .. }, UiIndicator::Kline(indicator)) => {
+                indicators.contains(&indicator)
             }
+            (
+                Content::Heatmap { indicators, .. } | Content::ShaderHeatmap { indicators, .. },
+                UiIndicator::Heatmap(indicator),
+            ) => indicators.contains(&indicator),
+            _ => false,
+        }
+    }
+    pub fn reorder_indicators(&mut self, event: &column_drag::DragEvent) {
+        if let Content::Kline { indicators, .. } = self {
+            crate::indicators::reorder_panels(indicators, event);
         }
     }
 
@@ -3576,6 +3548,78 @@ mod tests {
             Settings::default(),
             None,
         )
+    }
+
+    #[test]
+    fn indicator_browser_selection_is_separate_from_idempotent_activation() {
+        use crate::indicators::Action;
+        let mut state = State::default();
+        let streams = state.set_content_and_streams(vec![ticker()], ContentKind::CandlestickChart);
+        state.streams = ResolvedStream::Ready(streams);
+        let before = match &state.content {
+            Content::Kline { indicators, .. } => indicators.clone(),
+            _ => vec![],
+        };
+        state.update(Event::IndicatorMenu(Action::Select(
+            KlineIndicator::Rsi.into(),
+        )));
+        assert_eq!(
+            match &state.content {
+                Content::Kline { indicators, .. } => indicators.clone(),
+                _ => vec![],
+            },
+            before
+        );
+        for _ in 0..2 {
+            state.update(Event::IndicatorMenu(Action::Enable {
+                indicator: KlineIndicator::Rsi.into(),
+                enabled: true,
+            }));
+        }
+        assert!(state.content.indicator_enabled(KlineIndicator::Rsi.into()));
+        let Content::Kline {
+            chart: Some(chart),
+            indicators,
+            ..
+        } = &state.content
+        else {
+            panic!("chart missing")
+        };
+        assert!(chart.indicator_enabled(KlineIndicator::Rsi));
+        assert_eq!(
+            indicators
+                .iter()
+                .filter(|id| **id == KlineIndicator::Rsi)
+                .count(),
+            1
+        );
+        state.update(Event::IndicatorMenu(Action::Enable {
+            indicator: KlineIndicator::BarAnalysis.into(),
+            enabled: true,
+        }));
+        assert!(
+            !state
+                .content
+                .indicator_enabled(KlineIndicator::BarAnalysis.into())
+        );
+        state.update(Event::IndicatorMenu(Action::Enable {
+            indicator: UiIndicator::Heatmap(HeatmapIndicator::Volume),
+            enabled: true,
+        }));
+        for _ in 0..2 {
+            state.update(Event::IndicatorMenu(Action::Enable {
+                indicator: KlineIndicator::Rsi.into(),
+                enabled: false,
+            }));
+        }
+        assert!(!state.content.indicator_enabled(KlineIndicator::Rsi.into()));
+        assert!(matches!(
+            state.update(Event::ShowModal(Modal::Indicators)),
+            Some(Effect::FocusWidget(_))
+        ));
+        assert_eq!(state.modal, Some(Modal::Indicators));
+        state.update(Event::ShowModal(Modal::Indicators));
+        assert!(state.modal.is_none());
     }
 
     #[test]
