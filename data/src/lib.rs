@@ -632,6 +632,12 @@ fn sanitize_pane(value: &mut serde_json::Value, warnings: &mut Vec<String>) {
                         "SessionVolumeProfile",
                         "Vwap",
                         "GexLevels",
+                        "SmartMoney",
+                        "Rsi",
+                        "Atr",
+                        "Macd",
+                        "Adx",
+                        "Tpo",
                     ],
                     warnings,
                     "kline indicator",
@@ -1358,6 +1364,30 @@ mod tests {
             }
             _ => panic!("expected recovered state"),
         }
+    }
+
+    #[test]
+    fn all_supported_kline_indicators_survive_recovery() {
+        use crate::chart::indicator::{Indicator, KlineIndicator};
+        let supported = KlineIndicator::for_market(exchange::adapter::MarketKind::LinearPerps);
+        let mut indicators = serde_json::to_value(supported).unwrap();
+        indicators
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!("FutureIndicator"));
+        let mut pane = serde_json::json!({"KlineChart": {
+            "layout": {"splits": [], "autoscale": null},
+            "kind": "Candles", "drawings": [], "stream_type": [],
+            "settings": {}, "indicators": indicators, "link_group": null
+        }});
+        let mut warnings = Vec::new();
+        sanitize_pane(&mut pane, &mut warnings);
+        assert_eq!(warnings, vec!["dropped unknown kline indicator"]);
+        let crate::Pane::KlineChart { indicators, .. } = serde_json::from_value(pane).unwrap()
+        else {
+            panic!("supported chart must survive recovery");
+        };
+        assert_eq!(indicators, supported);
     }
 
     #[test]

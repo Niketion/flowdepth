@@ -2,6 +2,8 @@
 
 mod audio;
 mod chart;
+#[cfg(test)]
+mod config_verification;
 mod connector;
 mod debug_terminal;
 mod layout;
