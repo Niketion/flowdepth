@@ -66,6 +66,12 @@ jobs:
       - name: Run all tests
         run: cargo test --workspace --all-targets --all-features --locked
 
+      - name: Validate bundled indicator sources
+        run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test data/indicators/sources --namespace core
+
+      - name: Validate catalog indicator sources
+        run: cargo run --locked -p flowsurface-indicator-engine --bin flowsurface-indicator -- test indicators/sources --namespace catalog
+
   prepare-release:
     name: Prepare develop prerelease
     needs:

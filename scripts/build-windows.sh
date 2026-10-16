@@ -1,6 +1,12 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
 EXE_NAME="flowsurface.exe"
 ARCH=${1:-x86_64} # x86_64 | aarch64
+case "$ARCH" in
+  x86_64|aarch64) ;;
+  *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
 
 # set target triple and zip name
 if [ "$ARCH" = "aarch64" ]; then
@@ -12,8 +18,8 @@ else
 fi
 
 # build binary
-rustup target add $TARGET_TRIPLE
-cargo build --release --target=$TARGET_TRIPLE
+rustup target add "$TARGET_TRIPLE"
+cargo build --release --locked --target="$TARGET_TRIPLE"
 
 # create staging directory
 mkdir -p target/release/win-portable

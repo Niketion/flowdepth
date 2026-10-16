@@ -1,0 +1,271 @@
+upstream_path,decision,reason
+.github/workflows/lint.yml,retain,Keep Flowdepth develop release/quality workflow; add core and catalog source smoke tests to that workflow. Upstream signing identity and release jobs do not apply.
+.github/workflows/packaging.yaml,retain,Keep Flowdepth develop release/quality workflow; add core and catalog source smoke tests to that workflow. Upstream signing identity and release jobs do not apply.
+.github/workflows/release.yaml,retain,Keep Flowdepth develop release/quality workflow; add core and catalog source smoke tests to that workflow. Upstream signing identity and release jobs do not apply.
+Cargo.lock,combine,"Add indicator-engine, update workspace to 0.8.10; keep pinned iced/winit fixes, cookie support and Flowdepth dependencies."
+Cargo.toml,combine,"Add indicator-engine, update workspace to 0.8.10; keep pinned iced/winit fixes, cookie support and Flowdepth dependencies."
+README.md,retain,Keep Flowdepth branding and existing features; document selected integration and limitations.
+assets/app-icon/flowsurface.icns,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+assets/app-icon/flowsurface.ico,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+assets/app-icon/linux/flowsurface.png,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+assets/app-icon/windows-window.rgba,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+assets/app-icon/windows.png,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+assets/fonts/fontello.json,retain,"Keep Flowdepth assets and icon-font codepoints used by existing GEX, news and drawing controls."
+assets/fonts/icons.ttf,retain,"Keep Flowdepth assets and icon-font codepoints used by existing GEX, news and drawing controls."
+assets/screenshot.png,retain,"Keep Flowdepth assets and icon-font codepoints used by existing GEX, news and drawing controls."
+build.rs,retain,Keep Flowdepth icon embedding and build/version diagnostics; no upstream package identity substitution.
+data/Cargo.toml,combine,"Add indicator-engine, update workspace to 0.8.10; keep pinned iced/winit fixes, cookie support and Flowdepth dependencies."
+data/build.rs,retain,Keep compatible Flowdepth implementation; this file supports upstream unified-chart application structure.
+data/indicators/LICENSE,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+data/indicators/README.md,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+data/indicators/sources/anchored-vwap.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+data/indicators/sources/bar-analysis.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+data/indicators/sources/bollinger-bands.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+data/indicators/sources/cumulative-volume-delta.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+data/indicators/sources/moving-averages.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+data/indicators/sources/open-interest.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+data/indicators/sources/rsi.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+data/indicators/sources/volume.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+data/indicators/sources/vwap.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+data/src/aggr/ticks.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/aggr/time.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart.rs,retain,Keep compatible Flowdepth implementation; this file supports upstream unified-chart application structure.
+data/src/chart/comparison.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/heatmap.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/indicator.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/bar.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/chart_data.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/composition.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/drawing.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/fetch_plan.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/footprint.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/indicators.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/indicators/bundled.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/indicators/core.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/indicators/core/input.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/indicators/core/output.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/indicators/core/runtime.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/indicators/language.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/indicators/loader.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/indicators/registry.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/indicators/scripting.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/poc.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/series.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/studies.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/studies/big_trades.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/studies/tpo.rs,port,Calculation ported into data/src/chart/kline/tpo.rs; Flowdepth-specific drawing and config adapters.
+data/src/chart/kline/studies/volume_profile.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/kline/viewport.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/chart/ticks.rs,retain,"Keep compatible Flowdepth aggregation and chart state, raw-trade completeness, deduplication, CVD, bubbles, GEX and drawings. Engine and TPO integrated through explicit adapters."
+data/src/config.rs,retain,Keep compatible Flowdepth implementation; this file supports upstream unified-chart application structure.
+data/src/config/sidebar.rs,retain,Preserve Flowdepth saved-state migration/recovery and layout schema. Upstream unified-chart persistence is incompatible with custom panels and overlays.
+data/src/config/state.rs,retain,Preserve Flowdepth saved-state migration/recovery and layout schema. Upstream unified-chart persistence is incompatible with custom panels and overlays.
+data/src/config/theme.rs,retain,Preserve Flowdepth saved-state migration/recovery and layout schema. Upstream unified-chart persistence is incompatible with custom panels and overlays.
+data/src/config/timezone.rs,retain,Preserve Flowdepth saved-state migration/recovery and layout schema. Upstream unified-chart persistence is incompatible with custom panels and overlays.
+data/src/layout/dashboard.rs,retain,Preserve Flowdepth saved-state migration/recovery and layout schema. Upstream unified-chart persistence is incompatible with custom panels and overlays.
+data/src/layout/pane.rs,retain,Preserve Flowdepth saved-state migration/recovery and layout schema. Upstream unified-chart persistence is incompatible with custom panels and overlays.
+data/src/lib.rs,retain,Preserve Flowdepth saved-state migration/recovery and layout schema. Upstream unified-chart persistence is incompatible with custom panels and overlays.
+data/src/panel.rs,retain,Keep existing panel module paths and persisted TimeAndSales names.
+data/src/panel/ladder.rs,retain,Keep existing panel module paths and persisted TimeAndSales names.
+data/src/panel/timesales.rs,retain,Keep existing panel module paths and persisted TimeAndSales names.
+data/src/util.rs,retain,Preserve Flowdepth saved-state migration/recovery and layout schema. Upstream unified-chart persistence is incompatible with custom panels and overlays.
+exchange/LICENSE,adopt,Preserve the upstream exchange crate license.
+exchange/src/adapter.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/client.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/connect.rs,omit,Unreferenced upstream file; existing cancellation-safe WebSocket implementation remains active.
+exchange/src/adapter/http.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/hub/binance.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/hub/binance/fetch.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/hub/bybit.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/hub/bybit/fetch.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/hub/hyperliquid.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/hub/hyperliquid/fetch.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/hub/mexc.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/hub/mexc/fetch.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/hub/okex.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/adapter/hub/okex/fetch.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/lib.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/unit/price.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+exchange/src/unit/qty.rs,combine,"Upstream pagination, response validation and numeric fixes plus Flowdepth trade IDs, timeout handling, MEXC support and serialization."
+indicator-engine/Cargo.toml,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/LANGUAGE.md,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/LICENSE,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/README.md,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/bin/flowsurface-indicator.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/diagnostics.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/frame.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/hir.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/intrinsic.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/lib.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/ast.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/compiler.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/compiler/context.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/compiler/expressions.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/compiler/function_index.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/compiler/metadata.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/compiler/outputs.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/compiler/presentation.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/compiler/presentation_defaults.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/compiler/statements.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/compiler/validation.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/lexer.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/syntax.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/syntax/expressions.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/parser/syntax/statements.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/runtime.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/scene.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/types.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/src/warmup.rs,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/tests/fixtures/LICENSE,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/tests/fixtures/README.md,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/tests/fixtures/flat-open-zones.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicator-engine/tests/fixtures/volume-pivot-zones.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/CONTRIBUTING.md,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/LICENSE,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/README.md,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/accumulation-distribution.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/adx-dmi.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/aroon.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/atr.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/cci.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/chaikin-money-flow.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/chaikin-oscillator.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/donchian-channels.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/flat-open-zones.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/ichimoku-cloud.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/keltner-channels.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/macd.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/mfi.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/momentum.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/obv.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/parabolic-sar.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/pivot-points-standard.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/roc.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/stoch-rsi.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/stochastic.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/supertrend.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/trade-count.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/trix.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/ultimate-oscillator.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/volume-pivot-zones.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/williams-r.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+indicators/sources/zigzag.ind,adopt,"Upstream compiler, runtime, CLI, sources and licenses; GUI adapter exposes RSI ATR MACD ADX."
+scripts/build-macos.sh,combine,"Adopt fail-fast shell setup, architecture validation and locked builds; preserve Flowdepth release archive names and locations."
+scripts/build-windows.sh,combine,"Adopt fail-fast shell setup, architecture validation and locked builds; preserve Flowdepth release archive names and locations."
+scripts/package-linux.sh,combine,"Adopt fail-fast shell setup, architecture validation and locked builds; preserve Flowdepth release archive names and locations."
+scripts/package-macos.sh,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+scripts/package-windows.ps1,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+scripts/packaging/linux/com.flowsurface.flowsurface.desktop,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+scripts/packaging/linux/install.sh,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+scripts/packaging/linux/uninstall.sh,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+scripts/packaging/macos/Info.plist,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+scripts/packaging/windows/AppxManifest.xml,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+scripts/packaging/windows/flowsurface.manifest,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+scripts/packaging/windows/flowsurface.rc,retain,"Keep portable Flowdepth packages, icon and release paths; upstream MSIX/DMG installation and signing are not substituted."
+src/chart.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/comparison.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/heatmap.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/indicator.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/indicator/kline.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/indicator/kline/bar_analysis.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/indicator/kline/cumulative_delta.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/indicator/kline/open_interest.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/indicator/kline/volume.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/indicator/plot.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/indicator/plot/bar.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/indicator/plot/line.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/kline.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/ticks.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/ticks/x.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/chart/ticks/y.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/connector.rs,retain,Keep existing routing and stream lifecycle; upstream changes target unified multi-series composition.
+src/connector/client.rs,combine,Adopt upstream Arrow cursor maximum; retain Flowdepth trade identity and validation.
+src/connector/fetcher.rs,combine,"Use upstream venue-aware KlinePage in cache gap fetching; retain persistent cache, lifecycle and recovery."
+src/connector/stream.rs,retain,Keep existing routing and stream lifecycle; upstream changes target unified multi-series composition.
+src/layout.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/main.rs,retain,"Keep Flowdepth GEX/news/data-source setup, template workflows and startup recovery; avoid removing custom state."
+src/modal.rs,retain,"Keep Flowdepth GEX/news/data-source setup, template workflows and startup recovery; avoid removing custom state."
+src/modal/audio.rs,retain,"Keep Flowdepth GEX/news/data-source setup, template workflows and startup recovery; avoid removing custom state."
+src/modal/layout_manager.rs,retain,"Keep Flowdepth GEX/news/data-source setup, template workflows and startup recovery; avoid removing custom state."
+src/modal/network_editor.rs,retain,"Keep Flowdepth GEX/news/data-source setup, template workflows and startup recovery; avoid removing custom state."
+src/modal/pane.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/modal/pane/indicators.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/modal/pane/mini_tickers_list.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/modal/pane/settings.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/modal/pane/stream.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/modal/theme_editor.rs,retain,"Keep Flowdepth GEX/news/data-source setup, template workflows and startup recovery; avoid removing custom state."
+src/screen.rs,retain,Keep compatible Flowdepth implementation; this file supports upstream unified-chart application structure.
+src/screen/dashboard.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/heatmap.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/drawing.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/fetch.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/history.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/indicator_browser.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/layout.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/presentation.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/profile.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/profile/source.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/profile/tpo.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/rebuild.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/settings.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/studies.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/toolbar.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/updates.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/kline/viewport.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/ladder.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/content/timesales.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/settings.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/settings/heatmap.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/settings/kline.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/settings/ladder.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/settings/timesales.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/pane/state.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/dashboard/panel.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/sidebar.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/screen/sidebar/tickers_table.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/style.rs,retain,Keep Flowdepth theme/widget APIs and custom controls; upstream inspector/composition APIs require the full renderer rewrite.
+src/theme.rs,retain,Keep Flowdepth theme/widget APIs and custom controls; upstream inspector/composition APIs require the full renderer rewrite.
+src/widget.rs,retain,Keep Flowdepth theme/widget APIs and custom controls; upstream inspector/composition APIs require the full renderer rewrite.
+src/widget/chart.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/comparison.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/heatmap.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/heatmap/scene.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/heatmap/scene/camera.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/heatmap/scene/depth_grid.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/heatmap/ui.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/heatmap/ui/axisx.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/heatmap/ui/axisy.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/heatmap/ui/overlay.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/heatmap/view.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/heatmap/widget.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/axes.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/chrome.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/chrome/legend.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/drawing.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/footprint.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/interaction.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/interaction/navigation.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/layout.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/overlay.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/painting.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/painting/marks.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/painting/plot.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/presentation.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/scene.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/scene/domain.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/scene/viewport.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/studies.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/studies/big_trades.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/studies/tpo.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/chart/kline/studies/volume_profile.rs,retain,Keep Flowdepth chart/dashboard UI and custom workflows. Reuse upstream engine and TPO calculations without deleting fork-specific views or replacing saved layouts.
+src/widget/column_drag.rs,retain,Keep Flowdepth theme/widget APIs and custom controls; upstream inspector/composition APIs require the full renderer rewrite.
+src/widget/inspector.rs,retain,Keep Flowdepth theme/widget APIs and custom controls; upstream inspector/composition APIs require the full renderer rewrite.
+src/widget/series_editor.rs,retain,Keep Flowdepth theme/widget APIs and custom controls; upstream inspector/composition APIs require the full renderer rewrite.
+src/widget/study_configurator.rs,retain,Keep Flowdepth theme/widget APIs and custom controls; upstream inspector/composition APIs require the full renderer rewrite.
+src/window.rs,retain,"Keep patched iced/winit Windows popouts, DPI and state recovery; upstream disables Windows multi-window."

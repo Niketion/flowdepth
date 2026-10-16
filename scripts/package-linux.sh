@@ -1,5 +1,11 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
 ARCH=${2:-x86_64}  # if first arg is "package" then $2 holds arch
+case "$ARCH" in
+  x86_64|aarch64) ;;
+  *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
+esac
 TARGET="flowsurface"
 PROFILE="release"
 RELEASE_DIR="target/$PROFILE"
@@ -17,8 +23,8 @@ ARCHIVE_PATH="$RELEASE_DIR/$ARCHIVE_NAME"
 BINARY="target/$TRIPLE/$PROFILE/$TARGET"
 
 build() {
-  rustup target add $TRIPLE
-  cargo build --release --target="$TRIPLE"
+  rustup target add "$TRIPLE"
+  cargo build --release --locked --target="$TRIPLE"
 }
 
 archive_name() {
@@ -40,7 +46,7 @@ package() {
   echo "Packaged archive: $ARCHIVE_PATH"
 }
 
-case "$1" in
+case "${1:-}" in
   "package") package;;
   "archive_name") archive_name;;
   "archive_path") archive_path;;
