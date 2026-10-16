@@ -4,13 +4,13 @@ The aligned develop retains the original venues: Binance, Bybit, Hyperliquid, OK
 
 ## Isolated checks
 
-`src/config_verification.rs` provides two opt-in tests. Fixtures must be copies of local settings; private settings are not committed. Set `FLOWSURFACE_CONFIG_FIXTURES` to a directory containing `*.fixture.json`, and set `FLOWSURFACE_DATA_PATH` to a disposable test-data directory. The normal saved-state loader may recover and rewrite these copies, including creating backups.
+`src/config_verification.rs` provides two opt-in tests. Fixtures must be copies of local settings; private settings are not committed. Set `FLOWSURFACE_CONFIG_FIXTURES` to a directory containing `*.fixture.json`, and set `FLOWSURFACE_DATA_PATH` to a disposable test-data directory. Each fixture is loaded from a separate temporary subdirectory because normal recovery writes backups and prunes older files. The fixture inputs remain unchanged.
 
 ```powershell
 cargo test --workspace --all-targets --all-features --locked config_verification:: -- --ignored --nocapture --test-threads=1
 ```
 
-The inventory test checks layout counts, chart types, indicators, drawings, supported market streams, serialized state round trips and reconstruction of runtime dashboards. Unsupported provider streams are expected to be excluded by develop's existing recovery; their chart shells and settings remain. Other unexpected recovery warnings fail the check.
+The inventory test checks layout counts, chart types, indicators, drawings, supported market streams, serialized state round trips and reconstruction of runtime dashboards. Unsupported provider streams are expected to be excluded by develop's existing recovery; their chart shells and settings remain. Old window positions outside the current screen may be recentered. Other unexpected recovery warnings fail the check.
 
 The GPU test renders the five current layouts and a second configuration enabling RSI, ATR, MACD, ADX and TPO. It uses synthetic OHLCV bars to exercise chart and indicator drawing. These renders do not establish live market-data availability. The renderer checks output dimensions and visible content and writes RGBA images for inspection. This test expects copied fixtures named `saved-state.json.fixture.json` and `new-indicators.fixture.json`.
 

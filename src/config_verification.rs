@@ -121,8 +121,9 @@ fn load(path: &Path) -> data::State {
                     "dropped unsupported stream"
                         | "dropped unsupported favorite ticker"
                         | "dropped unsupported exchange"
+                        | "main window position was invalid or off-screen; opening centered"
                 )),
-                "fixture recovery must only exclude unsupported providers: {warnings:?}"
+                "unexpected fixture recovery: {warnings:?}"
             );
             state
         }
