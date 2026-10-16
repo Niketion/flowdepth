@@ -12,6 +12,7 @@ use super::plot::AnySeries;
 pub mod bar_analysis;
 pub mod cumulative_delta;
 pub mod open_interest;
+pub mod scripted;
 pub mod volume;
 
 /// UI adapter methods for converting domain `BasisSeries` into plot-ready series.
@@ -145,11 +146,24 @@ pub fn make_empty(which: KlineIndicator) -> Box<dyn KlineIndicatorImpl> {
         KlineIndicator::OpenInterest => {
             Box::new(super::kline::open_interest::OpenInterestIndicator::new())
         }
+        KlineIndicator::Rsi => Box::new(scripted::ScriptedIndicator::new(
+            data::chart::kline::scripted::ScriptKind::Rsi,
+        )),
+        KlineIndicator::Atr => Box::new(scripted::ScriptedIndicator::new(
+            data::chart::kline::scripted::ScriptKind::Atr,
+        )),
+        KlineIndicator::Macd => Box::new(scripted::ScriptedIndicator::new(
+            data::chart::kline::scripted::ScriptKind::Macd,
+        )),
+        KlineIndicator::Adx => Box::new(scripted::ScriptedIndicator::new(
+            data::chart::kline::scripted::ScriptKind::Adx,
+        )),
         KlineIndicator::VolumeBubbles
         | KlineIndicator::SessionVolumeProfile
         | KlineIndicator::Vwap
         | KlineIndicator::GexLevels
-        | KlineIndicator::SmartMoney => Box::new(OverlayIndicator),
+        | KlineIndicator::SmartMoney
+        | KlineIndicator::Tpo => Box::new(OverlayIndicator),
     }
 }
 

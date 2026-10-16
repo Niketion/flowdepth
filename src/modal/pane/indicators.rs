@@ -60,6 +60,157 @@ pub fn view_kline<'a>(
     };
     let mut sections = column![list].spacing(12);
 
+    for (indicator, label, value, set_period) in [
+        (
+            KlineIndicator::Rsi,
+            "RSI",
+            cfg.scripted.rsi_period,
+            (|settings: &mut data::chart::kline::scripted::ScriptedConfig, value| {
+                settings.rsi_period = value
+            }) as fn(&mut data::chart::kline::scripted::ScriptedConfig, u16),
+        ),
+        (
+            KlineIndicator::Atr,
+            "ATR",
+            cfg.scripted.atr_period,
+            (|settings: &mut data::chart::kline::scripted::ScriptedConfig, value| {
+                settings.atr_period = value
+            }) as fn(&mut data::chart::kline::scripted::ScriptedConfig, u16),
+        ),
+        (
+            KlineIndicator::Adx,
+            "ADX / DMI",
+            cfg.scripted.adx_period,
+            (|settings: &mut data::chart::kline::scripted::ScriptedConfig, value| {
+                settings.adx_period = value
+            }) as fn(&mut data::chart::kline::scripted::ScriptedConfig, u16),
+        ),
+    ] {
+        if selected.contains(&indicator) {
+            sections = sections.push(indicator_card(
+                label,
+                scripted_period_slider(
+                    pane,
+                    cfg,
+                    "Period",
+                    if indicator == KlineIndicator::Atr {
+                        1..=200
+                    } else {
+                        2..=200
+                    },
+                    value,
+                    set_period,
+                ),
+            ));
+        }
+    }
+    if selected.contains(&KlineIndicator::Macd) {
+        sections = sections.push(indicator_card(
+            "MACD",
+            column![
+                scripted_period_slider(
+                    pane,
+                    cfg,
+                    "Fast period",
+                    1..=200,
+                    cfg.scripted.macd_fast,
+                    |s, v| { s.macd_fast = v }
+                ),
+                scripted_period_slider(
+                    pane,
+                    cfg,
+                    "Slow period",
+                    2..=500,
+                    cfg.scripted.macd_slow,
+                    |s, v| { s.macd_slow = v }
+                ),
+                scripted_period_slider(
+                    pane,
+                    cfg,
+                    "Signal period",
+                    1..=200,
+                    cfg.scripted.macd_signal,
+                    |s, v| s.macd_signal = v
+                ),
+            ]
+            .spacing(6),
+        ));
+    }
+    if selected.contains(&KlineIndicator::Tpo) {
+        use data::chart::kline::tpo::{TpoAnchor, TpoConfig};
+        let tpo = cfg.tpo;
+        let anchor = pick_list(TpoAnchor::ALL, Some(tpo.anchor), move |anchor| {
+            config_message(
+                pane,
+                KlineConfig {
+                    tpo: TpoConfig { anchor, ..tpo },
+                    ..cfg
+                },
+            )
+        });
+        let period = pick_list(
+            [
+                exchange::Timeframe::M15,
+                exchange::Timeframe::M30,
+                exchange::Timeframe::H1,
+                exchange::Timeframe::H2,
+                exchange::Timeframe::H4,
+            ],
+            Some(tpo.letter_period),
+            move |letter_period| {
+                config_message(
+                    pane,
+                    KlineConfig {
+                        tpo: TpoConfig {
+                            letter_period,
+                            ..tpo
+                        },
+                        ..cfg
+                    },
+                )
+            },
+        );
+        let value_area = labeled_slider(
+            "Value area",
+            5u16..=100,
+            u16::from(tpo.value_area_percent).clamp(5, 100),
+            move |percent| {
+                config_message(
+                    pane,
+                    KlineConfig {
+                        tpo: TpoConfig {
+                            value_area_percent: percent as u8,
+                            ..tpo
+                        },
+                        ..cfg
+                    },
+                )
+            },
+            |value| format!("{value}%"),
+            Some(1),
+        );
+        let letters =
+            checkbox(tpo.show_letters)
+                .label("Show letters")
+                .on_toggle(move |show_letters| {
+                    config_message(
+                        pane,
+                        KlineConfig {
+                            tpo: TpoConfig {
+                                show_letters,
+                                ..tpo
+                            },
+                            ..cfg
+                        },
+                    )
+                });
+        sections = sections.push(indicator_card("TPO", column![
+            text("Session (UTC)"), anchor, text("Letter period"), period, value_area, letters,
+            text("Uses loaded candle high/low ranges. Requires time candles no longer than the letter period. Partial sessions are marked.")
+                .size(style::text_size::SMALL),
+        ].spacing(6)));
+    }
+
     if selected.contains(&KlineIndicator::CumulativeDelta) {
         let cvd = cfg.cvd;
         let render_style = pick_list(
@@ -1156,6 +1307,28 @@ pub fn view_kline<'a>(
 
 fn config_message(pane: pane_grid::Pane, cfg: KlineConfig) -> Message {
     Message::VisualConfigChanged(pane, VisualConfig::Kline(cfg), false)
+}
+
+fn scripted_period_slider(
+    pane: pane_grid::Pane,
+    cfg: KlineConfig,
+    label: &'static str,
+    range: std::ops::RangeInclusive<u16>,
+    value: u16,
+    set: fn(&mut data::chart::kline::scripted::ScriptedConfig, u16),
+) -> Element<'static, Message> {
+    labeled_slider(
+        label,
+        range.clone(),
+        value.clamp(*range.start(), *range.end()),
+        move |value| {
+            let mut scripted = cfg.scripted;
+            set(&mut scripted, value);
+            config_message(pane, KlineConfig { scripted, ..cfg })
+        },
+        |value| value.to_string(),
+        Some(1),
+    )
 }
 
 fn indicator_card<'a>(

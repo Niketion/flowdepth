@@ -27,6 +27,11 @@ pub enum KlineIndicator {
     Vwap,
     GexLevels,
     SmartMoney,
+    Rsi,
+    Atr,
+    Macd,
+    Adx,
+    Tpo,
 }
 
 impl Indicator for KlineIndicator {
@@ -42,7 +47,7 @@ impl KlineIndicator {
     // Indicator togglers on UI menus depend on these arrays.
     // Every variant needs to be in either SPOT, PERPS or both.
     /// Indicators that can be used with spot market tickers
-    const FOR_SPOT: [KlineIndicator; 8] = [
+    const FOR_SPOT: [KlineIndicator; 13] = [
         KlineIndicator::Volume,
         KlineIndicator::BarAnalysis,
         KlineIndicator::CumulativeDelta,
@@ -51,9 +56,14 @@ impl KlineIndicator {
         KlineIndicator::Vwap,
         KlineIndicator::GexLevels,
         KlineIndicator::SmartMoney,
+        KlineIndicator::Rsi,
+        KlineIndicator::Atr,
+        KlineIndicator::Macd,
+        KlineIndicator::Adx,
+        KlineIndicator::Tpo,
     ];
     /// Indicators that can be used with perpetual swap market tickers
-    const FOR_PERPS: [KlineIndicator; 9] = [
+    const FOR_PERPS: [KlineIndicator; 14] = [
         KlineIndicator::Volume,
         KlineIndicator::BarAnalysis,
         KlineIndicator::CumulativeDelta,
@@ -63,6 +73,11 @@ impl KlineIndicator {
         KlineIndicator::Vwap,
         KlineIndicator::GexLevels,
         KlineIndicator::SmartMoney,
+        KlineIndicator::Rsi,
+        KlineIndicator::Atr,
+        KlineIndicator::Macd,
+        KlineIndicator::Adx,
+        KlineIndicator::Tpo,
     ];
 
     pub fn placement(self) -> IndicatorPlacement {
@@ -73,6 +88,7 @@ impl KlineIndicator {
                 | Self::Vwap
                 | Self::GexLevels
                 | Self::SmartMoney
+                | Self::Tpo
         ) {
             IndicatorPlacement::Overlay
         } else {
@@ -108,6 +124,11 @@ impl Display for KlineIndicator {
             KlineIndicator::Vwap => write!(f, "VWAP"),
             KlineIndicator::GexLevels => write!(f, "GEX Overlay"),
             KlineIndicator::SmartMoney => write!(f, "Smart Money Concepts"),
+            KlineIndicator::Rsi => write!(f, "RSI"),
+            KlineIndicator::Atr => write!(f, "ATR"),
+            KlineIndicator::Macd => write!(f, "MACD"),
+            KlineIndicator::Adx => write!(f, "ADX / DMI"),
+            KlineIndicator::Tpo => write!(f, "TPO"),
         }
     }
 }

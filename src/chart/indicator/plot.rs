@@ -563,7 +563,7 @@ where
     }
 }
 
-type TooltipFn<T> = Box<dyn Fn(&T, Option<&T>) -> PlotTooltip>;
+pub(crate) type TooltipFn<T> = Box<dyn Fn(&T, Option<&T>) -> PlotTooltip>;
 
 const TOOLTIP_MARGIN: f32 = 4.0; // px from edge of canvas
 const TOOLTIP_PADDING: f32 = 8.0; // px inside tooltip box

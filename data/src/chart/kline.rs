@@ -8,6 +8,9 @@ use exchange::{
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
+pub mod scripted;
+pub mod tpo;
+
 pub mod drawing {
     use super::{SessionProfileMode, SessionProfilePlacement};
     use exchange::{UnixMs, unit::Price};
@@ -813,6 +816,10 @@ pub struct Config {
     pub smc: SmcConfig,
     /// Settings owned by the CVD panel indicator.
     pub cvd: CvdConfig,
+    /// Inputs evaluated by the upstream indicator engine.
+    pub scripted: scripted::ScriptedConfig,
+    /// TPO calculation settings; independent of volume profiles.
+    pub tpo: tpo::TpoConfig,
     /// Visual settings owned by configurable indicators.
     pub indicator_configs: IndicatorConfigs,
     /// Compatibility input for states saved before `indicator_configs`.
@@ -831,6 +838,8 @@ impl Default for Config {
             vwap: VwapConfig::default(),
             smc: SmcConfig::default(),
             cvd: CvdConfig::default(),
+            scripted: scripted::ScriptedConfig::default(),
+            tpo: tpo::TpoConfig::default(),
             indicator_configs: IndicatorConfigs::default(),
             legacy_gex_levels: None,
         }

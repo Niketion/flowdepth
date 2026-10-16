@@ -38,6 +38,7 @@ use std::{cell::RefCell, sync::Arc, time::Instant};
 
 mod drawing;
 pub(crate) mod smc;
+mod tpo;
 
 /// Maximum number of raw trades to retain in memory.
 /// Older trades are pruned by exchange timestamp when this cap is exceeded.
@@ -1769,6 +1770,7 @@ impl KlineChart {
             );
         }
 
+        let scripted_changed = self.visual_config.scripted != visual_config.scripted;
         self.visual_config = visual_config;
         let config = self.visual_config;
         self.chart.cache.clear_all();
@@ -1777,6 +1779,9 @@ impl KlineChart {
             .filter_map(Option::as_mut)
             .for_each(|indi| {
                 indi.on_config_changed(&config);
+                if scripted_changed {
+                    indi.rebuild_from_source(&self.data_source);
+                }
                 indi.clear_all_caches();
             });
 
@@ -2781,6 +2786,20 @@ impl canvas::Program<Message> for KlineChart {
                             chart_interval_ms,
                             visible_low.to_f64(),
                             visible_high.to_f64(),
+                            palette,
+                        );
+                    }
+                    if self.indicator_enabled(KlineIndicator::Tpo) {
+                        self::tpo::draw(
+                            &self.data_source,
+                            frame,
+                            earliest,
+                            latest,
+                            interval_to_x,
+                            price_to_y,
+                            chart.tick_size,
+                            chart.scaling,
+                            &self.visual_config.tpo,
                             palette,
                         );
                     }
