@@ -422,11 +422,8 @@ fn parse_arrow_trades(
         }
     }
 
-    // Fast path: if no nulls were encountered, last_ts is simply the
-    // timestamp of the last valid trade.
-    if last_ts.is_none() {
-        last_ts = trades.last().map(|t| t.time);
-    }
+    // Null-containing batches and later valid batches both advance the cursor.
+    last_ts = last_ts.max(trades.last().map(|trade| trade.time));
 
     if skipped_total > 0 {
         log::warn!(
@@ -449,4 +446,52 @@ fn parse_arrow_trades(
         raw_row_count,
         last_ts,
     })
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+    use arrow_ipc::writer::StreamWriter;
+    use arrow_schema::{DataType, Field, Schema};
+    use exchange::adapter::Exchange;
+    use std::sync::Arc;
+
+    #[test]
+    fn valid_batch_after_null_batch_advances_cursor() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("ts", DataType::Int64, true),
+            Field::new("price", DataType::Float64, true),
+            Field::new("qty", DataType::Float64, true),
+            Field::new("is_sell", DataType::Boolean, true),
+        ]));
+        let batch = |time, price: Option<f64>| {
+            RecordBatch::try_new(
+                Arc::clone(&schema),
+                vec![
+                    Arc::new(Int64Array::from(vec![Some(time)])),
+                    Arc::new(Float64Array::from(vec![price])),
+                    Arc::new(Float64Array::from(vec![Some(1.0)])),
+                    Arc::new(BooleanArray::from(vec![Some(false)])),
+                ],
+            )
+            .unwrap()
+        };
+        let mut bytes = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut bytes, &schema).unwrap();
+            writer.write(&batch(1000, None)).unwrap();
+            writer.write(&batch(2000, Some(100.0))).unwrap();
+            writer.finish().unwrap();
+        }
+        let ticker = TickerInfo::new(
+            exchange::Ticker::new("BTCUSDT", Exchange::BinanceSpot),
+            0.01,
+            0.001,
+            None,
+        );
+        let parsed = parse_arrow_trades(bytes.into(), &ticker).unwrap();
+        assert_eq!(parsed.raw_row_count, 2);
+        assert_eq!(parsed.trades.len(), 1);
+        assert_eq!(parsed.last_ts, Some(UnixMs(2000)));
+    }
 }

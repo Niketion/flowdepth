@@ -564,7 +564,7 @@ pub struct Trade {
     pub qty: Qty,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Kline {
     pub time: UnixMs,
     pub open: Price,
@@ -597,7 +597,7 @@ impl Kline {
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub enum Volume {
     TotalOnly(Qty),
     BuySell(Qty, Qty),

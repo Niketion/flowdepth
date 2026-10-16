@@ -1,5 +1,5 @@
-use crate::adapter::AdapterError;
 use crate::adapter::limiter::RateLimiter;
+use crate::adapter::{AdapterError, KlinePage};
 use crate::depth::DepthPayload;
 use crate::{Kline, OpenInterest, Ticker, TickerInfo, TickerStats, Timeframe, Trade, UnixMs};
 
@@ -31,6 +31,13 @@ pub(super) enum FetchCommand<M> {
         timeframe: Timeframe,
         range: Option<(UnixMs, UnixMs)>,
         reply: ResponseTx<Vec<Kline>>,
+    },
+    KlinePage {
+        ticker: TickerInfo,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+        reply: ResponseTx<KlinePage>,
     },
     OpenInterest {
         ticker: TickerInfo,
@@ -313,6 +320,17 @@ pub(super) trait FetchCommandHandler<M> {
         Box::pin(async { Err(unsupported_fetch("Kline fetch")) })
     }
 
+    fn fetch_klines_page(
+        &mut self,
+        ticker_info: TickerInfo,
+        timeframe: Timeframe,
+        from: UnixMs,
+        to: UnixMs,
+    ) -> BoxFuture<'_, Result<KlinePage, AdapterError>> {
+        let _ = (ticker_info, timeframe, from, to);
+        Box::pin(async { Err(unsupported_fetch("Kline page fetch")) })
+    }
+
     fn fetch_open_interest(
         &mut self,
         ticker_info: TickerInfo,
@@ -387,6 +405,16 @@ where
             reply,
         } => {
             let result = handler.fetch_klines(ticker, timeframe, range).await;
+            let _ = reply.send(result);
+        }
+        FetchCommand::KlinePage {
+            ticker,
+            timeframe,
+            from,
+            to,
+            reply,
+        } => {
+            let result = handler.fetch_klines_page(ticker, timeframe, from, to).await;
             let _ = reply.send(result);
         }
         FetchCommand::OpenInterest {

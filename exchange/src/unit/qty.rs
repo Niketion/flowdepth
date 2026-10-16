@@ -95,7 +95,7 @@ impl Qty {
         Self::scale_or_one(self.to_f64())
     }
 
-    fn min_qty_units(min_qty: MinQtySize) -> i64 {
+    pub fn min_qty_units(min_qty: MinQtySize) -> i64 {
         let exp = Self::QTY_SCALE + (min_qty.power as i32);
         assert!(exp >= 0, "QTY_SCALE must be >= -min_qty.power");
         10i64
@@ -109,14 +109,9 @@ impl Qty {
             return self;
         }
 
-        let half = unit / 2;
-        let rounded = if self.units >= 0 {
-            ((self.units + half).div_euclid(unit)) * unit
-        } else {
-            ((self.units - half).div_euclid(unit)) * unit
-        };
-
-        Self { units: rounded }
+        Self {
+            units: Self::round_units_half_away(self.units, unit),
+        }
     }
 
     pub fn to_lots(self, min_qty: MinQtySize) -> i64 {
@@ -125,11 +120,27 @@ impl Qty {
             return self.units;
         }
 
-        let half = unit / 2;
-        if self.units >= 0 {
-            (self.units + half).div_euclid(unit)
+        Self::round_units_half_away(self.units, unit).div_euclid(unit)
+    }
+
+    fn round_units_half_away(units: i64, unit: i64) -> i64 {
+        let magnitude = units.unsigned_abs();
+        let half = (unit / 2) as u64;
+        let rounded_magnitude =
+            (magnitude.saturating_add(half) / unit as u64).saturating_mul(unit as u64);
+        let limit = if units >= 0 {
+            i64::MAX as u64
         } else {
-            (self.units - half).div_euclid(unit)
+            i64::MAX as u64 + 1
+        };
+        let rounded_magnitude = rounded_magnitude.min(limit / unit as u64 * unit as u64);
+
+        if units >= 0 {
+            rounded_magnitude as i64
+        } else if rounded_magnitude == i64::MAX as u64 + 1 {
+            i64::MIN
+        } else {
+            -(rounded_magnitude as i64)
         }
     }
 
@@ -310,4 +321,30 @@ where
     D: serde::Deserializer<'de>,
 {
     serde_util::de_number_like_or_object(deserializer, "qty", Qty::from_f64)
+}
+
+#[cfg(test)]
+mod rounding_tests {
+    use super::*;
+    #[test]
+    fn signed_quantities_round_symmetrically_and_saturate_without_overflow() {
+        let step = MinQtySize::from(0.1);
+        for value in [0.04, 0.05, 0.14, 0.15, 0.16, 1.25] {
+            let positive = Qty::from_f64(value).round_to_min_qty(step);
+            let negative = Qty::from_f64(-value).round_to_min_qty(step);
+            assert_eq!(negative.units, -positive.units);
+            assert_eq!(
+                Qty::from_f64(-value).to_lots(step),
+                -Qty::from_f64(value).to_lots(step)
+            );
+        }
+        assert_eq!(
+            Qty::from_f64(-0.14).round_to_min_qty(step),
+            Qty::from_f64(-0.1)
+        );
+        for units in [i64::MIN, i64::MAX] {
+            let rounded = Qty { units }.round_to_min_qty(step);
+            assert_eq!(rounded.units % Qty::min_qty_units(step), 0);
+        }
+    }
 }

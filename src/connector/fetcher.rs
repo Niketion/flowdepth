@@ -1747,21 +1747,20 @@ async fn fetch_klines_cached(
     let Some((from, to)) = range else {
         return handles.fetch_klines(ticker_info, timeframe, None).await;
     };
+    if from > to {
+        return Err(AdapterError::InvalidRequest("Invalid kline range".into()));
+    }
     let to_exclusive = to.saturating_add(1);
     let Some(cache) = market_cache() else {
-        return handles
-            .fetch_klines(ticker_info, timeframe, Some((from, to)))
-            .await;
+        return fetch_paged_klines(handles, ticker_info, timeframe, from, to_exclusive).await;
     };
 
     let cached = cache.read_klines(ticker_info, timeframe, from, to_exclusive);
     let cache_complete = cached.is_complete();
     let mut combined = cached.records;
     for (gap_from, gap_to_exclusive) in cached.gaps {
-        let gap_to = gap_to_exclusive.saturating_sub(1);
-        let mut fetched = handles
-            .fetch_klines(ticker_info, timeframe, Some((gap_from, gap_to)))
-            .await?;
+        let mut fetched =
+            fetch_paged_klines(handles, ticker_info, timeframe, gap_from, gap_to_exclusive).await?;
         fetched.sort_by_key(|kline| kline.time);
         fetched.dedup_by_key(|kline| kline.time);
         store_contiguous_klines(
@@ -1785,6 +1784,119 @@ async fn fetch_klines_cached(
         );
     }
     Ok(combined)
+}
+
+async fn fetch_paged_klines(
+    handles: &AdapterHandles,
+    ticker: TickerInfo,
+    timeframe: Timeframe,
+    from: UnixMs,
+    to_exclusive: UnixMs,
+) -> Result<Vec<Kline>, AdapterError> {
+    // Include the candle containing a non-aligned range start.
+    collect_kline_pages(from.floor_to(timeframe), to_exclusive, |start, end| {
+        handles.fetch_klines_page(ticker, timeframe, start, end)
+    })
+    .await
+}
+
+async fn collect_kline_pages<F, Fut>(
+    mut from: UnixMs,
+    to_exclusive: UnixMs,
+    mut fetch_page: F,
+) -> Result<Vec<Kline>, AdapterError>
+where
+    F: FnMut(UnixMs, UnixMs) -> Fut,
+    Fut: std::future::Future<Output = Result<exchange::adapter::KlinePage, AdapterError>>,
+{
+    let mut records = Vec::new();
+    while from < to_exclusive {
+        let page = fetch_page(from, to_exclusive).await?;
+        if page.next_from <= from || page.next_from > to_exclusive {
+            return Err(AdapterError::InvalidRequest(
+                "Kline pagination did not advance within the requested range".into(),
+            ));
+        }
+        records.extend(
+            page.data
+                .into_iter()
+                .filter(|bar| bar.time >= from && bar.time < page.next_from),
+        );
+        from = page.next_from;
+    }
+    records.sort_unstable_by_key(|bar| bar.time);
+    records.dedup_by_key(|bar| bar.time);
+    Ok(records)
+}
+
+#[cfg(test)]
+mod kline_pagination_tests {
+    use super::*;
+    use exchange::adapter::KlinePage;
+    use iced::futures::{executor::block_on, future::ready};
+    fn bar(time: u64) -> Kline {
+        Kline::new(
+            time,
+            100.0,
+            101.0,
+            99.0,
+            100.0,
+            exchange::Volume::TotalOnly(exchange::unit::Qty::from_f64(1.0)),
+            exchange::unit::MinTicksize::from(0.01),
+        )
+    }
+    #[test]
+    fn pagination_continues_through_empty_pages_and_filters_response_boundaries() {
+        let mut calls = Vec::new();
+        let result = block_on(collect_kline_pages(UnixMs(0), UnixMs(300), |from, end| {
+            calls.push((from, end));
+            let data = match from.as_u64() {
+                0 => vec![bar(0), bar(0), bar(100)],
+                100 => Vec::new(),
+                200 => vec![bar(200), bar(99), bar(300)],
+                _ => panic!("unexpected page"),
+            };
+            ready(Ok(KlinePage {
+                data,
+                next_from: from.saturating_add(100),
+            }))
+        }))
+        .unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(
+            result.iter().map(|bar| bar.time).collect::<Vec<_>>(),
+            [UnixMs(0), UnixMs(200)]
+        );
+    }
+    #[test]
+    fn invalid_page_cursor_fails_without_looping() {
+        for next_from in [UnixMs(0), UnixMs(301)] {
+            let mut calls = 0;
+            let result = block_on(collect_kline_pages(UnixMs(0), UnixMs(300), |_, _| {
+                calls += 1;
+                ready(Ok(KlinePage {
+                    data: Vec::new(),
+                    next_from,
+                }))
+            }));
+            assert!(result.is_err());
+            assert_eq!(calls, 1);
+        }
+    }
+    #[test]
+    fn a_failed_page_never_reports_a_successful_complete_range() {
+        let result = block_on(collect_kline_pages(UnixMs(0), UnixMs(300), |from, _| {
+            ready(if from == UnixMs(0) {
+                Ok(KlinePage {
+                    data: vec![bar(0)],
+                    next_from: UnixMs(100),
+                })
+            } else {
+                Err(AdapterError::InvalidRequest("rate limited".into()))
+            })
+        }));
+        assert!(result.is_err());
+    }
 }
 
 /// Persist only ranges proven by contiguous candles. Storing the complete REST

@@ -556,3 +556,77 @@ impl<I> StreamConfig<I> {
         }
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct KlinePage {
+    pub data: Vec<Kline>,
+    pub next_from: UnixMs,
+}
+
+impl KlinePage {
+    pub(crate) fn new(mut data: Vec<Kline>, from: UnixMs, next_from: UnixMs) -> Self {
+        data.retain(|kline| kline.time >= from && kline.time < next_from);
+        data.sort_unstable_by_key(|kline| kline.time);
+        data.dedup_by_key(|kline| kline.time);
+        Self { data, next_from }
+    }
+}
+
+fn kline_page_end(
+    from: UnixMs,
+    to: UnixMs,
+    timeframe: Timeframe,
+    max_bars: u64,
+) -> Result<UnixMs, AdapterError> {
+    if from >= to || max_bars == 0 {
+        return Err(AdapterError::InvalidRequest(
+            "Invalid kline page range".to_string(),
+        ));
+    }
+
+    Ok(from
+        .saturating_add(timeframe.to_milliseconds().max(1).saturating_mul(max_bars))
+        .min(to))
+}
+
+#[cfg(test)]
+mod kline_page_tests {
+    use super::*;
+    fn bar(time: u64) -> Kline {
+        Kline::new(
+            time,
+            100.0,
+            101.0,
+            99.0,
+            100.0,
+            crate::Volume::TotalOnly(Qty::from_f64(1.0)),
+            crate::unit::MinTicksize::from(0.01),
+        )
+    }
+    #[test]
+    fn pages_are_half_open_sorted_and_deduplicated() {
+        let page = KlinePage::new(
+            vec![bar(200), bar(300), bar(100), bar(200), bar(99)],
+            UnixMs(100),
+            UnixMs(300),
+        );
+        assert_eq!(
+            page.data.iter().map(|bar| bar.time).collect::<Vec<_>>(),
+            vec![UnixMs(100), UnixMs(200)]
+        );
+        assert_eq!(page.next_from, UnixMs(300));
+    }
+    #[test]
+    fn page_boundaries_obey_limits_and_reject_invalid_ranges() {
+        assert_eq!(
+            kline_page_end(UnixMs(0), UnixMs(120_001), Timeframe::M1, 2).unwrap(),
+            UnixMs(120_000)
+        );
+        assert_eq!(
+            kline_page_end(UnixMs(120_000), UnixMs(120_001), Timeframe::M1, 2).unwrap(),
+            UnixMs(120_001)
+        );
+        assert!(kline_page_end(UnixMs(10), UnixMs(10), Timeframe::M1, 2).is_err());
+        assert!(kline_page_end(UnixMs(0), UnixMs(100), Timeframe::M1, 0).is_err());
+    }
+}
