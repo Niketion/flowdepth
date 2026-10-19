@@ -61,7 +61,7 @@ Windows and macOS beta binaries are not currently signed. Windows SmartScreen ma
 - **Crypto options analytics:** BTC, ETH, and SOL GEX profiles sourced from Deribit, plus independently displayed Derive observed maker flow matched to Deribit contracts. SOL uses the linear USDC option chain.
 - **Persistent market-data cache:** local storage for klines, open interest, trades, and derived bubble summaries with gap detection, deduplication, and invalidation.
 - **Connection recovery:** automatic reconnect, historical gap backfill, bounded retries, stale-request cancellation, and sequence-aware recovery.
-- **Technical studies:** RSI, ATR, MACD and ADX/DMI evaluated by the upstream indicator engine, plus a candle-based TPO overlay with session coverage labels. See the [upstream integration notes](docs/upstream-0.8.10-integration.md) for scope and limitations.
+- **Technical studies:** RSI, ATR, MACD and ADX/DMI evaluated by the upstream indicator engine, plus a candle-based TPO overlay with session coverage labels.
 - **Workspace tools:** persistent layouts, saved-state recovery, customizable themes, pane linking, loading/coverage feedback, and an in-app debug terminal.
 - **Public market data:** market data is received directly from exchange REST APIs and WebSockets. Current features do not require exchange trading credentials.
 
@@ -147,7 +147,6 @@ The application binary and Rust package are currently still named `flowsurface` 
 
 ## Technical documentation
 
-- [Upstream 0.8.10 integration decisions](./docs/upstream-0.8.10-integration.md)
 - [Adaptive volume bubbles](./docs/adaptive-volume-bubbles.md)
 - [Binance iceberg/replenishment detector](./docs/binance-iceberg-detector.md)
 - [Derive maker flow and GEX architecture](./docs/derive-maker-flow.md)

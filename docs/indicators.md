@@ -36,4 +36,4 @@ $env:FLOWSURFACE_INDICATOR_QA = "target/indicator-ui-qa"
 cargo test --workspace --all-targets --all-features --locked indicators::tests:: -- --ignored --nocapture --test-threads=1
 ```
 
-The opt-in GPU test writes synthetic previews for every available editor, advanced controls and compact layouts. It checks popup bounds and sends pointer events to actual checkbox, row-selection and close widgets. These checks do not claim live feed availability. The saved-configuration checks documented in `windows-config-verification.md` remain available; use copied fixtures only.
+The opt-in GPU test writes synthetic previews for every available editor, advanced controls and compact layouts. It checks popup bounds and sends pointer events to actual checkbox, row-selection and close widgets. These checks do not claim live feed availability. Saved-configuration checks in `src/config_verification.rs` use copied fixtures only.
