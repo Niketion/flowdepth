@@ -1560,7 +1560,9 @@ name = "flowsurface-indicator-engine"
 version = "0.8.10"
 dependencies = [
  "chrono",
+ "ring",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "url",
 ]
