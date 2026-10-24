@@ -3057,7 +3057,14 @@ impl canvas::Program<Message> for KlineChart {
             Interaction::Zoomin { .. } => mouse::Interaction::ZoomIn,
             Interaction::None | Interaction::Ruler { .. } => {
                 if cursor.is_over(bounds) {
-                    mouse::Interaction::Crosshair
+                    if self.drawings.active_tool != data::chart::kline::drawing::DrawingTool::Select
+                    {
+                        mouse::Interaction::Pointer
+                    } else if self.drawings.selected.is_some() {
+                        mouse::Interaction::default()
+                    } else {
+                        mouse::Interaction::Crosshair
+                    }
                 } else {
                     mouse::Interaction::default()
                 }
