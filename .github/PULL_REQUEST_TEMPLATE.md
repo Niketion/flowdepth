@@ -27,6 +27,10 @@ Manual testing notes:
 
 Add before/after screenshots for UI changes, or write `Not applicable`.
 
+## AI assistance
+
+AI-assisted development is welcome, but you must explicitly disclose when submitted code was developed with AI assistance. State whether AI was used and briefly describe the assisted parts, or write `None` if no AI assistance was used.
+
 ## Compatibility and data impact
 
 Describe any effect on saved layouts, migrations, cached market data, data downloads, or recovery behavior. Write `None` when there is no effect.
