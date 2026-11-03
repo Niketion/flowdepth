@@ -73,6 +73,7 @@ pub struct DeriveOptionsClient {
 }
 
 impl DeriveOptionsClient {
+    /// Creates a client for the Derive v3 production API using the optional proxy.
     pub fn new(proxy: Option<&adapter::Proxy>) -> Result<Self, DeriveError> {
         Self::with_base_url(PRODUCTION_BASE_URL, proxy)
     }
@@ -130,6 +131,8 @@ impl DeriveOptionsClient {
         Ok(result)
     }
 
+    /// Fetches and deduplicates settled maker option trades within the inclusive time window.
+    /// Trades with missing, null, or non-settled batch status are skipped.
     pub async fn fetch_trade_history(
         &self,
         underlying: OptionsUnderlying,
@@ -166,7 +169,8 @@ impl DeriveOptionsClient {
                 let Some(instrument) = by_name.get(item.instrument_name.as_str()) else {
                     continue;
                 };
-                if item.batch_status != "Settled" || item.liquidity_role != "maker" {
+                if item.batch_status.as_deref() != Some("Settled") || item.liquidity_role != "maker"
+                {
                     continue;
                 }
                 let Some(trade) = item.into_model(instrument) else {
@@ -329,7 +333,7 @@ struct TradeDto {
     trade_amount: String,
     mark_price: String,
     index_price: String,
-    batch_status: String,
+    batch_status: Option<String>,
 }
 
 impl TradeDto {
@@ -394,11 +398,32 @@ mod tests {
         assert_eq!(model.expiration_timestamp, UnixMs::new(1_909_008_000_000));
     }
 
+    /// Verifies pagination, deduplication, and rejection of non-settled or unknown-status trades.
     #[tokio::test]
     async fn paginates_and_keeps_only_unique_settled_maker_trades() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
         let address = listener.local_addr().expect("address");
-        let fixture = fixture();
+        let mut fixture = fixture();
+        // Unknown statuses must not prevent valid trades on the same page from loading.
+        for (id, status) in [
+            ("trade-null-status", Some(Value::Null)),
+            ("trade-missing-status", None),
+        ] {
+            let mut trade = fixture["trades_page_1"]["result"]["trades"][0].clone();
+            trade["trade_id"] = Value::String(id.to_owned());
+            if let Some(status) = status {
+                trade["batch_status"] = status;
+            } else {
+                trade
+                    .as_object_mut()
+                    .expect("trade object")
+                    .remove("batch_status");
+            }
+            fixture["trades_page_1"]["result"]["trades"]
+                .as_array_mut()
+                .expect("trades")
+                .push(trade);
+        }
         let pages = [
             fixture["instruments_page_1"].to_string(),
             fixture["instruments_page_2"].to_string(),
