@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 use thiserror::Error;
 
-const PRODUCTION_BASE_URL: &str = "https://api.lyra.finance";
+const PRODUCTION_BASE_URL: &str = "https://api.derive.xyz/v3";
 const PAGE_SIZE: u16 = 1_000;
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -73,6 +73,7 @@ pub struct DeriveOptionsClient {
 }
 
 impl DeriveOptionsClient {
+    /// Creates a client for the Derive v3 production API using the optional proxy.
     pub fn new(proxy: Option<&adapter::Proxy>) -> Result<Self, DeriveError> {
         Self::with_base_url(PRODUCTION_BASE_URL, proxy)
     }
@@ -130,6 +131,8 @@ impl DeriveOptionsClient {
         Ok(result)
     }
 
+    /// Fetches and deduplicates settled maker option trades within the inclusive time window.
+    /// Trades with missing, null, or non-settled batch status are skipped.
     pub async fn fetch_trade_history(
         &self,
         underlying: OptionsUnderlying,
@@ -154,7 +157,7 @@ impl DeriveOptionsClient {
             let params = TradeHistoryParams {
                 instrument_type: "option",
                 currency: underlying.as_str(),
-                tx_status: "settled",
+                batch_status: "Settled",
                 from_timestamp: from_timestamp.as_u64(),
                 to_timestamp: to_timestamp.as_u64(),
                 page,
@@ -166,7 +169,8 @@ impl DeriveOptionsClient {
                 let Some(instrument) = by_name.get(item.instrument_name.as_str()) else {
                     continue;
                 };
-                if item.tx_status != "settled" || item.liquidity_role != "maker" {
+                if item.batch_status.as_deref() != Some("Settled") || item.liquidity_role != "maker"
+                {
                     continue;
                 }
                 let Some(trade) = item.into_model(instrument) else {
@@ -306,7 +310,7 @@ impl InstrumentDto {
 struct TradeHistoryParams<'a> {
     instrument_type: &'static str,
     currency: &'a str,
-    tx_status: &'static str,
+    batch_status: &'static str,
     from_timestamp: u64,
     to_timestamp: u64,
     page: u32,
@@ -329,7 +333,7 @@ struct TradeDto {
     trade_amount: String,
     mark_price: String,
     index_price: String,
-    tx_status: String,
+    batch_status: Option<String>,
 }
 
 impl TradeDto {
@@ -394,11 +398,32 @@ mod tests {
         assert_eq!(model.expiration_timestamp, UnixMs::new(1_909_008_000_000));
     }
 
+    /// Verifies pagination, deduplication, and rejection of non-settled or unknown-status trades.
     #[tokio::test]
     async fn paginates_and_keeps_only_unique_settled_maker_trades() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listener");
         let address = listener.local_addr().expect("address");
-        let fixture = fixture();
+        let mut fixture = fixture();
+        // Unknown statuses must not prevent valid trades on the same page from loading.
+        for (id, status) in [
+            ("trade-null-status", Some(Value::Null)),
+            ("trade-missing-status", None),
+        ] {
+            let mut trade = fixture["trades_page_1"]["result"]["trades"][0].clone();
+            trade["trade_id"] = Value::String(id.to_owned());
+            if let Some(status) = status {
+                trade["batch_status"] = status;
+            } else {
+                trade
+                    .as_object_mut()
+                    .expect("trade object")
+                    .remove("batch_status");
+            }
+            fixture["trades_page_1"]["result"]["trades"]
+                .as_array_mut()
+                .expect("trades")
+                .push(trade);
+        }
         let pages = [
             fixture["instruments_page_1"].to_string(),
             fixture["instruments_page_2"].to_string(),
@@ -426,7 +451,7 @@ mod tests {
                 assert!(request_body.contains("\"instrument_type\":\"option\""));
                 assert!(request_body.contains("\"currency\":\"BTC\""));
                 if index >= 2 {
-                    assert!(request_body.contains("\"tx_status\":\"settled\""));
+                    assert!(request_body.contains("\"batch_status\":\"Settled\""));
                     assert!(request_body.contains("\"from_timestamp\":1800000000000"));
                     assert!(request_body.contains("\"to_timestamp\":1800000010000"));
                 } else {

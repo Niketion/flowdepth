@@ -8,7 +8,7 @@ The GEX integration keeps structural exposure and observed flow separate:
 - **Derive is an observed-flow source.** Only settled option trades where Derive reports the participant as maker are retained.
 - **The datasets are never summed.** Derive flow does not alter Deribit GEX, walls, flip, zones, projection, or monitor data, and Derive is not exposed as a chartable exchange adapter.
 
-The Derive client uses REST JSON-RPC at `https://api.lyra.finance`:
+The Derive client uses REST JSON-RPC at `https://api.derive.xyz/v3`:
 
 - `public/get_all_instruments`
 - `public/get_trade_history`
