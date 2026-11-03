@@ -187,9 +187,14 @@ impl UniqueStreams {
         });
     }
 
+    /// Collects stream specs in a stable total order.
+    ///
+    /// `Subscription::run_with` hashes the chunked `StreamConfig` to identify a
+    /// stream, so the order must depend only on the set of streams.
     fn streams<T, F>(&self, exchange_filter: Option<Exchange>, stream_extractor: F) -> Vec<T>
     where
         F: Fn(Exchange, &StreamKind) -> Option<T>,
+        T: Ord,
     {
         let f = &stream_extractor;
 
@@ -201,10 +206,14 @@ impl UniqueStreams {
                 .filter_map(move |stream| f(exchange, stream))
         };
 
-        match exchange_filter {
+        let mut specs: Vec<T> = match exchange_filter {
             Some(exchange) => per_exchange(exchange).collect(),
             None => Exchange::ALL.into_iter().flat_map(per_exchange).collect(),
-        }
+        };
+
+        // Specs are unique, so the unstable sort is deterministic.
+        specs.sort_unstable();
+        specs
     }
 
     pub fn depth_streams(
@@ -233,7 +242,9 @@ impl UniqueStreams {
     }
 }
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize, PartialOrd, Ord,
+)]
 pub enum StreamTicksize {
     ServerSide(TickMultiplier),
     #[default]
@@ -242,6 +253,69 @@ pub enum StreamTicksize {
 
 fn default_depth_aggr() -> StreamTicksize {
     StreamTicksize::Client
+}
+
+#[cfg(test)]
+mod stream_order_tests {
+    use super::*;
+
+    #[test]
+    fn subscription_specs_are_stable_across_pane_order_and_duplicates() {
+        let streams: Vec<_> = [Exchange::BinanceLinear, Exchange::BybitLinear]
+            .into_iter()
+            .flat_map(|exchange| {
+                (0..32).flat_map(move |index| {
+                    let ticker_info = TickerInfo::new(
+                        crate::Ticker::new(&format!("TEST{index}USDT"), exchange),
+                        0.1,
+                        0.001,
+                        None,
+                    );
+                    [
+                        StreamKind::Depth {
+                            ticker_info,
+                            depth_aggr: StreamTicksize::Client,
+                            push_freq: PushFrequency::ServerDefault,
+                        },
+                        StreamKind::Trades { ticker_info },
+                        StreamKind::Kline {
+                            ticker_info,
+                            timeframe: Timeframe::M1,
+                        },
+                    ]
+                })
+            })
+            .collect();
+        let original = UniqueStreams::from(streams.iter());
+        let reordered = UniqueStreams::from(streams.iter().rev().chain(streams.iter()));
+        for filter in [
+            None,
+            Some(Exchange::BinanceLinear),
+            Some(Exchange::BybitLinear),
+        ] {
+            assert_eq!(
+                original.depth_streams(filter),
+                reordered.depth_streams(filter)
+            );
+            assert_eq!(
+                original.trade_streams(filter),
+                reordered.trade_streams(filter)
+            );
+            assert_eq!(
+                original.kline_streams(filter),
+                reordered.kline_streams(filter)
+            );
+            assert!(original.depth_streams(filter).is_sorted());
+            assert!(original.trade_streams(filter).is_sorted());
+            assert!(original.kline_streams(filter).is_sorted());
+        }
+        for (exchange, specs) in original.combined_used() {
+            let other = reordered.combined()[exchange].as_ref().unwrap();
+            assert_eq!(specs.depth, other.depth);
+            assert_eq!(specs.trade, other.trade);
+            assert_eq!(specs.kline, other.kline);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
