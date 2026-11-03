@@ -573,7 +573,11 @@ fn parse_catalog_arguments(arguments: &[String]) -> Result<CatalogArguments, Str
     }
 
     let output = output.ok_or_else(|| "catalog requires --output <catalog.json>".to_owned())?;
-    if output.extension().and_then(|extension| extension.to_str()) == Some("ind") {
+    if output
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("ind"))
+    {
         return Err("catalog output must not be an .ind source file".to_owned());
     }
 
@@ -768,15 +772,19 @@ mod tests {
         fs::remove_file(sources.join("broken.ind")).unwrap();
         let source = sources.join("alpha.ind");
         let original = fs::read(&source).unwrap();
-        assert!(
-            command_catalog(&arguments(&[
+        for extension in ["ind", "IND", "Ind", "iND", "InD", "inD", "INd", "iNd"] {
+            let destination = source.with_extension(extension);
+            let result = command_catalog(&arguments(&[
                 sources.to_str().unwrap(),
                 "--output",
-                source.to_str().unwrap(),
-            ]))
-            .is_err()
-        );
-        assert_eq!(original, fs::read(&source).unwrap());
+                destination.to_str().unwrap(),
+            ]));
+            assert!(
+                result.is_err(),
+                "source extension {extension} must be rejected"
+            );
+            assert_eq!(original, fs::read(&source).unwrap());
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
