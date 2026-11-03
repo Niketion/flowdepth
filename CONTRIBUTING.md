@@ -71,6 +71,14 @@ Use a dedicated branch for new work and target `develop` unless a maintainer req
 
 Coding agents should follow [AGENTS.md](AGENTS.md). They may commit, push, and open or update PRs within an explicitly authorized task; merging PRs and creating or publishing releases require an explicit user request.
 
+## AI-assisted contributions
+
+AI-assisted development is welcome. **If any submitted code was developed with AI assistance, you must explicitly disclose this in the PR description.** Briefly describe which parts were assisted; using AI does not disqualify a contribution.
+
+For example: "AI assistance: Codex helped implement the Derive response parsing and regression tests."
+
+Contributors remain responsible for understanding, reviewing, and validating all submitted code, including AI-assisted code.
+
 ## Data and secrets
 
 Do not commit proprietary market data, licensed datasets, private user data, exchange credentials, API keys, signing material, or other secrets. Use minimal synthetic or redistributable fixtures when a test needs data, and document its source and license when applicable.

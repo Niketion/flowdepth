@@ -43,6 +43,12 @@ for contributor guidance and [README.md](README.md) for setup and project contex
   by the agent. Follow `.github/PULL_REQUEST_TEMPLATE.md` for PR descriptions.
 - Explain the problem, resulting behavior, validation, and any compatibility
   impact. Do not claim a check passed unless it was actually run successfully.
+- AI-assisted development is welcome, but disclosure is required when any
+  submitted code was developed with AI assistance. State this explicitly in the
+  PR description and briefly describe the assisted parts. Do not omit AI
+  involvement when preparing a PR on behalf of a contributor.
+- Contributors remain responsible for understanding, reviewing, and validating
+  all submitted code, including AI-assisted code.
 
 ## Validation
 
