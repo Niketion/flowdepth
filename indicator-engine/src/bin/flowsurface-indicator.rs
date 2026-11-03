@@ -722,6 +722,65 @@ mod tests {
     }
 
     #[test]
+    fn catalog_is_deterministic_and_preserves_output_on_invalid_sources() {
+        let root = env::temp_dir().join(format!("flowsurface-catalog-{}", process::id()));
+        let sources = root.join("sources");
+        fs::create_dir_all(&sources).unwrap();
+        for name in ["zeta", "alpha"] {
+            command_new(&arguments(&[
+                sources.to_str().unwrap(),
+                "--id",
+                &format!("test.{name}"),
+                "--title",
+                name,
+            ]))
+            .unwrap();
+        }
+        let output = root.join("catalog.json");
+        let args = arguments(&[
+            sources.to_str().unwrap(),
+            "--output",
+            output.to_str().unwrap(),
+            "--namespace",
+            "test",
+        ]);
+        command_catalog(&args).unwrap();
+        let first = fs::read(&output).unwrap();
+        command_catalog(&args).unwrap();
+        assert_eq!(first, fs::read(&output).unwrap());
+        let catalog: serde_json::Value = serde_json::from_slice(&first).unwrap();
+        let entries = catalog["indicators"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["id"], "test.alpha");
+        assert_eq!(entries[1]["id"], "test.zeta");
+        for entry in entries {
+            let relative = entry["path"].as_str().unwrap();
+            assert!(!relative.contains('\\'));
+            let bytes = fs::read(sources.join(relative)).unwrap();
+            let hash = ring::digest::digest(&ring::digest::SHA256, &bytes);
+            let expected: String = hash.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+            assert_eq!(entry["sha256"], expected);
+            assert_eq!(entry["size_bytes"], bytes.len());
+        }
+        fs::write(sources.join("broken.ind"), "language(1)\nindicator(\n").unwrap();
+        assert!(command_catalog(&args).is_err());
+        assert_eq!(first, fs::read(&output).unwrap());
+        fs::remove_file(sources.join("broken.ind")).unwrap();
+        let source = sources.join("alpha.ind");
+        let original = fs::read(&source).unwrap();
+        assert!(
+            command_catalog(&arguments(&[
+                sources.to_str().unwrap(),
+                "--output",
+                source.to_str().unwrap(),
+            ]))
+            .is_err()
+        );
+        assert_eq!(original, fs::read(&source).unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn cli_commands_validate_sources_and_create_without_overwriting() {
         let parsed = parse_new_arguments(&arguments(&[
             "--id",

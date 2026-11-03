@@ -255,6 +255,69 @@ fn default_depth_aggr() -> StreamTicksize {
     StreamTicksize::Client
 }
 
+#[cfg(test)]
+mod stream_order_tests {
+    use super::*;
+
+    #[test]
+    fn subscription_specs_are_stable_across_pane_order_and_duplicates() {
+        let streams: Vec<_> = [Exchange::BinanceLinear, Exchange::BybitLinear]
+            .into_iter()
+            .flat_map(|exchange| {
+                (0..32).flat_map(move |index| {
+                    let ticker_info = TickerInfo::new(
+                        crate::Ticker::new(&format!("TEST{index}USDT"), exchange),
+                        0.1,
+                        0.001,
+                        None,
+                    );
+                    [
+                        StreamKind::Depth {
+                            ticker_info,
+                            depth_aggr: StreamTicksize::Client,
+                            push_freq: PushFrequency::ServerDefault,
+                        },
+                        StreamKind::Trades { ticker_info },
+                        StreamKind::Kline {
+                            ticker_info,
+                            timeframe: Timeframe::M1,
+                        },
+                    ]
+                })
+            })
+            .collect();
+        let original = UniqueStreams::from(streams.iter());
+        let reordered = UniqueStreams::from(streams.iter().rev().chain(streams.iter()));
+        for filter in [
+            None,
+            Some(Exchange::BinanceLinear),
+            Some(Exchange::BybitLinear),
+        ] {
+            assert_eq!(
+                original.depth_streams(filter),
+                reordered.depth_streams(filter)
+            );
+            assert_eq!(
+                original.trade_streams(filter),
+                reordered.trade_streams(filter)
+            );
+            assert_eq!(
+                original.kline_streams(filter),
+                reordered.kline_streams(filter)
+            );
+            assert!(original.depth_streams(filter).is_sorted());
+            assert!(original.trade_streams(filter).is_sorted());
+            assert!(original.kline_streams(filter).is_sorted());
+        }
+        for (exchange, specs) in original.combined_used() {
+            let other = reordered.combined()[exchange].as_ref().unwrap();
+            assert_eq!(specs.depth, other.depth);
+            assert_eq!(specs.trade, other.trade);
+            assert_eq!(specs.kline, other.kline);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct StreamSpecs {
     pub depth: Vec<(TickerInfo, StreamTicksize, PushFrequency)>,
