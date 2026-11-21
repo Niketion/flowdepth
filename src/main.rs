@@ -743,7 +743,9 @@ impl Flowsurface {
                     }
                 }
 
-                let expected_streams = self.active_dashboard().configured_market_streams();
+                let expected_streams = self
+                    .active_dashboard()
+                    .configured_market_streams(|ticker| self.sidebar.ticker_info(ticker));
                 let sync_transition = self
                     .market_connectivity
                     .sync_expected(&expected_streams, now);
@@ -2150,7 +2152,9 @@ impl Flowsurface {
 
         let exchange_streams = self
             .active_dashboard()
-            .market_subscriptions(&self.data_sources.exchange)
+            .market_subscriptions(&self.data_sources.exchange, |ticker| {
+                self.sidebar.ticker_info(ticker)
+            })
             .map(Message::MarketWsEvent);
 
         let layout_id = self.layout_manager.active_layout_id().map(|id| id.unique);
@@ -2424,7 +2428,9 @@ impl Flowsurface {
                     sidebar::Position::Right => (Alignment::End, padding::right(48).bottom(84)),
                 };
 
-                let trade_streams_list = dashboard.streams.trade_streams(None);
+                let trade_streams_list = dashboard
+                    .streams
+                    .trade_streams(None, |ticker| self.sidebar.ticker_info(ticker));
 
                 dashboard_modal(
                     base,

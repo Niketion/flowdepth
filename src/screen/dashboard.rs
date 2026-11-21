@@ -2687,7 +2687,11 @@ impl Dashboard {
         Subscription::batch(subscriptions)
     }
 
-    pub fn market_subscriptions(&self, handles: &AdapterHandles) -> Subscription<exchange::Event> {
+    pub fn market_subscriptions(
+        &self,
+        handles: &AdapterHandles,
+        metadata: impl Fn(&exchange::Ticker) -> Option<TickerInfo>,
+    ) -> Subscription<exchange::Event> {
         let pane_count = self.panes.iter().count()
             + self
                 .popout
@@ -2700,10 +2704,11 @@ impl Dashboard {
             .combined_used()
             .flat_map(|(exchange, specs)| {
                 let mut subs = vec![];
+                let trade_tickers = specs.trade_tickers(&metadata).collect::<Vec<_>>();
                 log::debug!(
                     "STREAM SubscriptionGroup | exchange={exchange:?} depth={} trade={} kline={}",
                     specs.depth.len(),
-                    specs.trade.len(),
+                    trade_tickers.len(),
                     specs.kline.len()
                 );
 
@@ -2734,9 +2739,8 @@ impl Dashboard {
                     }
                 }
 
-                if !specs.trade.is_empty() {
-                    let trade_subs = specs
-                        .trade
+                if !trade_tickers.is_empty() {
+                    let trade_subs = trade_tickers
                         .chunks(MAX_TRADE_TICKERS_PER_STREAM)
                         .enumerate()
                         .map(|(idx, tickers)| {
@@ -2809,12 +2813,12 @@ impl Dashboard {
     }
 
     fn refresh_streams(&mut self, main_window: window::Id) -> Task<Message> {
-        let old_streams = all_unique_streams(&self.streams);
+        let old_streams = all_unique_streams(&self.streams, |_| None);
         let all_pane_streams = self
             .iter_all_panes(main_window)
             .flat_map(|(_, _, pane_state)| pane_state.streams.ready_iter().into_iter().flatten());
         self.streams = UniqueStreams::from(all_pane_streams);
-        let new_streams = all_unique_streams(&self.streams);
+        let new_streams = all_unique_streams(&self.streams, |_| None);
         let added = new_streams
             .iter()
             .filter(|stream| !old_streams.contains(stream))
@@ -2846,8 +2850,11 @@ impl Dashboard {
     /// Complete set of market streams currently required by the dashboard.
     /// Used by the application-level connectivity tracker to avoid treating a
     /// partial reconnect as a fully restored connection.
-    pub fn configured_market_streams(&self) -> Vec<StreamKind> {
-        all_unique_streams(&self.streams)
+    pub fn configured_market_streams(
+        &self,
+        metadata: impl Fn(&exchange::Ticker) -> Option<TickerInfo>,
+    ) -> Vec<StreamKind> {
+        all_unique_streams(&self.streams, metadata)
     }
 
     pub fn startup_load_status(&self, main_window: window::Id) -> StartupLoadStatus {
@@ -3277,7 +3284,10 @@ impl Dashboard {
     }
 }
 
-fn all_unique_streams(streams: &UniqueStreams) -> Vec<StreamKind> {
+fn all_unique_streams(
+    streams: &UniqueStreams,
+    metadata: impl Fn(&exchange::Ticker) -> Option<TickerInfo>,
+) -> Vec<StreamKind> {
     let mut all = Vec::new();
     all.extend(streams.depth_streams(None).into_iter().map(
         |(ticker_info, depth_aggr, push_freq)| StreamKind::Depth {
@@ -3288,7 +3298,7 @@ fn all_unique_streams(streams: &UniqueStreams) -> Vec<StreamKind> {
     ));
     all.extend(
         streams
-            .trade_streams(None)
+            .trade_streams(None, metadata)
             .into_iter()
             .map(|ticker_info| StreamKind::Trades { ticker_info }),
     );
