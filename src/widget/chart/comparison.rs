@@ -1611,22 +1611,6 @@ fn crosshair_badge_center(anchor: f32, start: f32, span: f32, size: f32) -> Opti
     None
 }
 
-#[cfg(test)]
-mod crosshair_badge_tests {
-    use super::crosshair_badge_center;
-
-    #[test]
-    fn badge_fits_only_when_the_plot_can_contain_it() {
-        assert_eq!(crosshair_badge_center(50.0, 0.0, 99.0, 100.0), None);
-        assert_eq!(crosshair_badge_center(20.0, 10.0, 100.0, 100.0), Some(60.0));
-        assert_eq!(
-            crosshair_badge_center(230.0, 10.0, 200.0, 100.0),
-            Some(160.0)
-        );
-        assert_eq!(crosshair_badge_center(f32::NAN, 0.0, 100.0, 100.0), None);
-    }
-}
-
 struct EndLabel {
     pos: Point,
     bg_color: Color,
@@ -1841,4 +1825,20 @@ enum LegendMode {
 enum IconKind {
     Cog,
     Close,
+}
+
+#[cfg(test)]
+mod crosshair_badge_tests {
+    use super::crosshair_badge_center;
+
+    #[test]
+    fn badge_fits_only_when_the_plot_can_contain_it() {
+        assert_eq!(crosshair_badge_center(50.0, 0.0, 99.0, 100.0), None);
+        assert_eq!(crosshair_badge_center(20.0, 10.0, 100.0, 100.0), Some(60.0));
+        assert_eq!(
+            crosshair_badge_center(230.0, 10.0, 200.0, 100.0),
+            Some(160.0)
+        );
+        assert_eq!(crosshair_badge_center(f32::NAN, 0.0, 100.0, 100.0), None);
+    }
 }
