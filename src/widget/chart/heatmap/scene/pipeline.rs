@@ -1068,3 +1068,22 @@ impl Pipeline {
         }
     }
 }
+
+#[cfg(test)]
+mod shader_tests {
+    use super::{CIRCLE_SHADER_SRC, HEATMAP_SHADER_SRC, RECT_SHADER_SRC};
+    use iced::wgpu::naga::{
+        front::wgsl,
+        valid::{Capabilities, ValidationFlags, Validator},
+    };
+
+    #[test]
+    fn heatmap_shader_modules_validate() {
+        for source in [RECT_SHADER_SRC, CIRCLE_SHADER_SRC, HEATMAP_SHADER_SRC] {
+            let module = wgsl::parse_str(source).expect("valid heatmap WGSL");
+            Validator::new(ValidationFlags::all(), Capabilities::empty())
+                .validate(&module)
+                .expect("valid heatmap shader module");
+        }
+    }
+}

@@ -410,9 +410,9 @@ impl shader::Primitive for Primitive {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         bounds: &Rectangle,
-        _viewport: &Viewport,
+        viewport: &Viewport,
     ) {
-        let cam_u = self.camera.to_uniform(bounds.width, bounds.height);
+        let cam_u = self.camera.to_uniform(*bounds, viewport.scale_factor());
 
         pipeline.update_camera(self.id, device, queue, &cam_u);
         pipeline.update_params(self.id, device, queue, &self.params);

@@ -19,6 +19,14 @@ pub struct Network {
 }
 
 impl Network {
+    /// Compare the settings used by clients that are created at startup.
+    pub fn requires_restart_from(&self, running: &Self) -> bool {
+        self.proxy != running.proxy
+            || self.server_url != running.server_url
+            || self.server_auth_token != running.server_auth_token
+            || self.trade_fetch_mode != running.trade_fetch_mode
+    }
+
     /// Return a copy suitable for disk persistence (proxy auth stripped).
     /// Auth credentials are stored separately in the system keychain.
     pub fn for_persistence(&self) -> Self {
@@ -47,5 +55,23 @@ impl std::fmt::Display for TradeFetchMode {
             Self::Exchange => write!(f, "Exchange"),
             Self::Server => write!(f, "Server"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reverting_saved_network_settings_clears_restart_even_after_live_login() {
+        let running = Network::default();
+        let mut saved = Network {
+            trade_fetch_mode: TradeFetchMode::Exchange,
+            ..running.clone()
+        };
+        assert!(saved.requires_restart_from(&running));
+        saved.quantwheel_session_cookie = Some("synthetic-session".into());
+        saved.trade_fetch_mode = running.trade_fetch_mode.clone();
+        assert!(!saved.requires_restart_from(&running));
     }
 }

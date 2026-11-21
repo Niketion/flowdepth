@@ -14,7 +14,7 @@ use data::chart::{
 };
 use data::layout::pane::VisualConfig;
 use data::panel::ladder;
-use data::panel::timeandsales::{StackedBar, StackedBarRatio};
+use data::panel::timeandsales::{StackedBar, StackedBarRatio, TickerDisplay, TimeFormat};
 use data::util::format_with_commas;
 
 use crate::widget::pick_list;
@@ -788,8 +788,29 @@ pub fn timesales_cfg_view<'a>(
             .into()
     };
 
+    let change_display = move |ticker_display| {
+        Message::VisualConfigChanged(
+            pane,
+            VisualConfig::TimeAndSales(timeandsales::Config {
+                ticker_display,
+                ..cfg
+            }),
+            false,
+        )
+    };
     let content = split_column![
         trade_size_column,
+        column![
+            text("Ticker display").size(crate::style::text_size::SECTION),
+            row![
+                radio("Icon", TickerDisplay::Icon, Some(cfg.ticker_display), change_display),
+                radio("Icon + ticker", TickerDisplay::IconAndTicker, Some(cfg.ticker_display), change_display)
+            ].spacing(12),
+            text("Time format").size(crate::style::text_size::SECTION),
+            pick_list(TimeFormat::ALL, Some(cfg.time_format), move |time_format| {
+                Message::VisualConfigChanged(pane, VisualConfig::TimeAndSales(timeandsales::Config { time_format, ..cfg }), false)
+            }),
+        ].spacing(8),
         history_column,
         stacked_bar,
         row![space::horizontal(), sync_all_button(pane, VisualConfig::TimeAndSales(cfg))],

@@ -377,16 +377,15 @@ where
 
             let ylbl_x_right = ctx.regions.y_axis.x + gutter_w - 2.0;
             let ylbl_x = (ylbl_x_right - y_w).max(ctx.regions.y_axis.x + 2.0);
-            let ylbl_y = cy_px.clamp(
-                plot_rect.y + y_h * 0.5,
-                plot_rect.y + plot_rect.height - y_h * 0.5,
-            );
-            reserved_y = Some(Rectangle {
-                x: ylbl_x,
-                y: ylbl_y - y_h * 0.5,
-                width: y_w,
-                height: y_h,
-            });
+            reserved_y =
+                crosshair_badge_center(cy_px, plot_rect.y, plot_rect.height, y_h).map(|y| {
+                    Rectangle {
+                        x: ylbl_x,
+                        y: y - y_h * 0.5,
+                        width: y_w,
+                        height: y_h,
+                    }
+                });
         }
 
         Some(Scene {
@@ -1553,27 +1552,24 @@ where
         let label_w = est_w.clamp(100.0, 240.0);
         let label_h = TEXT_SIZE + 6.0;
 
-        let time_x = cx.clamp(
-            plot_rect.x + label_w * 0.5,
-            plot_rect.x + plot_rect.width - label_w * 0.5,
-        );
-        let time_y = plot_rect.y + plot_rect.height + 2.0 + label_h * 0.5;
-
-        frame.fill_rectangle(
-            Point::new(time_x - label_w * 0.5, time_y - label_h * 0.5),
-            Size::new(label_w, label_h),
-            bg_col,
-        );
-        frame.fill_text(canvas::Text {
-            content: time_str,
-            position: Point::new(time_x, time_y),
-            color: text_col,
-            size: TEXT_SIZE.into(),
-            font: style::AZERET_MONO,
-            align_x: iced::Alignment::Center.into(),
-            align_y: iced::Alignment::Center.into(),
-            ..Default::default()
-        });
+        if let Some(time_x) = crosshair_badge_center(cx, plot_rect.x, plot_rect.width, label_w) {
+            let time_y = plot_rect.y + plot_rect.height + 2.0 + label_h * 0.5;
+            frame.fill_rectangle(
+                Point::new(time_x - label_w * 0.5, time_y - label_h * 0.5),
+                Size::new(label_w, label_h),
+                bg_col,
+            );
+            frame.fill_text(canvas::Text {
+                content: time_str,
+                position: Point::new(time_x, time_y),
+                color: text_col,
+                size: TEXT_SIZE.into(),
+                font: style::AZERET_MONO,
+                align_x: iced::Alignment::Center.into(),
+                align_y: iced::Alignment::Center.into(),
+                ..Default::default()
+            });
+        }
 
         let gutter = ctx.gutter_width();
         let pct_str = super::format_pct(ci.y_pct, scene.y_step, true);
@@ -1583,10 +1579,10 @@ where
         let gutter_right = split_x + gutter;
 
         let ylbl_x_right = gutter_right;
-        let ylbl_y = cy.clamp(
-            plot_rect.y + label_h * 0.5,
-            plot_rect.y + plot_rect.height - label_h * 0.5,
-        );
+        let Some(ylbl_y) = crosshair_badge_center(cy, plot_rect.y, plot_rect.height, label_h)
+        else {
+            return;
+        };
 
         frame.fill_rectangle(
             Point::new(split_x + 2.0, ylbl_y - label_h * 0.5),
@@ -1603,6 +1599,31 @@ where
             align_y: iced::Alignment::Center.into(),
             ..Default::default()
         });
+    }
+}
+
+fn crosshair_badge_center(anchor: f32, start: f32, span: f32, size: f32) -> Option<f32> {
+    let min = start + size * 0.5;
+    let max = start + span - size * 0.5;
+    if min <= max && min.is_finite() && max.is_finite() && anchor.is_finite() {
+        return Some(anchor.clamp(min, max));
+    }
+    None
+}
+
+#[cfg(test)]
+mod crosshair_badge_tests {
+    use super::crosshair_badge_center;
+
+    #[test]
+    fn badge_fits_only_when_the_plot_can_contain_it() {
+        assert_eq!(crosshair_badge_center(50.0, 0.0, 99.0, 100.0), None);
+        assert_eq!(crosshair_badge_center(20.0, 10.0, 100.0, 100.0), Some(60.0));
+        assert_eq!(
+            crosshair_badge_center(230.0, 10.0, 200.0, 100.0),
+            Some(160.0)
+        );
+        assert_eq!(crosshair_badge_center(f32::NAN, 0.0, 100.0, 100.0), None);
     }
 }
 

@@ -21,7 +21,6 @@ mod window;
 mod windowing;
 
 use connector::client::DataSources;
-use data::config::theme::default_theme;
 use data::{layout::WindowSpec, sidebar};
 use layout::LayoutId;
 use modal::{
@@ -38,12 +37,10 @@ use widget::{
     tooltip,
 };
 
-use crate::widget::pick_list;
 use iced::{
     Alignment, Element, Length, Subscription, Task, Theme, keyboard, padding,
     widget::{
-        button, column, container, progress_bar, row, scrollable, text,
-        tooltip::Position as TooltipPosition,
+        button, column, container, progress_bar, row, text, tooltip::Position as TooltipPosition,
     },
 };
 use std::{
@@ -134,14 +131,13 @@ struct Flowsurface {
     theme_editor: ThemeEditor,
     network_editor: NetworkEditor,
     network_config: data::Network,
+    running_network_config: data::Network,
     data_sources: Arc<DataSources>,
     audio_stream: AudioStream,
     confirm_dialog: Option<screen::ConfirmDialog<Message>>,
     startup_warning: Option<StartupWarning>,
     save_state_enabled: bool,
-    volume_size_unit: exchange::SizeUnit,
-    ui_scale_factor: data::ScaleFactor,
-    timezone: data::UserTimezone,
+    settings: modal::settings::Settings,
     theme: data::Theme,
     notifications: Notifications,
     windowing_mode: WindowingMode,
@@ -446,13 +442,16 @@ impl Flowsurface {
             confirm_dialog: None,
             startup_warning,
             save_state_enabled,
-            timezone: saved_state.timezone,
-            ui_scale_factor: saved_state.scale_factor,
-            volume_size_unit: saved_state.volume_size_unit,
+            settings: modal::settings::Settings {
+                timezone: saved_state.timezone,
+                ui_scale_factor: saved_state.scale_factor,
+                volume_size_unit: saved_state.volume_size_unit,
+            },
             theme: saved_state.theme,
             notifications: Notifications::new(),
             network_config: saved_state.network.clone(),
-            network_editor: NetworkEditor::new(&saved_state.network, None),
+            running_network_config: saved_state.network.clone(),
+            network_editor: NetworkEditor::new(&saved_state.network),
             windowing_mode,
             market_connectivity: market_service::MarketConnectivity::new(),
             iceberg_detectors: connector::iceberg::IcebergDetectorRegistry::default(),
@@ -1088,17 +1087,6 @@ impl Flowsurface {
                     );
 
                     let additional_task = match event {
-                        Some(dashboard::Event::DistributeFetchedData {
-                            layout_id,
-                            pane_id,
-                            data,
-                            stream,
-                        }) => dashboard
-                            .distribute_fetched_data(main_window.id, pane_id, data, stream, false)
-                            .map(move |msg| Message::Dashboard {
-                                layout_id: Some(layout_id),
-                                event: msg,
-                            }),
                         Some(dashboard::Event::Notification(toast)) => {
                             self.notifications.push(toast);
                             Task::none()
@@ -1190,7 +1178,7 @@ impl Flowsurface {
             Message::StartupWarningNoop => {}
             Message::ConnectionOverlayNoop => {}
             Message::SetTimezone(tz) => {
-                self.timezone = tz;
+                self.settings.timezone = tz;
             }
             Message::SetMetadataCaching(enabled) => {
                 self.sidebar.set_cache_enabled(enabled);
@@ -1201,7 +1189,7 @@ impl Flowsurface {
                 }
             }
             Message::ScaleFactorChanged(value) => {
-                self.ui_scale_factor = value;
+                self.settings.ui_scale_factor = value;
             }
             Message::InvalidateMarketDataCache => {
                 self.confirm_dialog = None;
@@ -1512,7 +1500,7 @@ impl Flowsurface {
                 }
             }
             Message::NetworkEditor(msg) => {
-                let action = self.network_editor.update(msg);
+                let action = self.network_editor.update(msg, &self.network_config);
 
                 match action {
                     Some(network_editor::Action::ApplyProxy(ref proxy)) => {
@@ -1523,13 +1511,16 @@ impl Flowsurface {
                         }
                         self.network_config.proxy = proxy.clone();
 
-                        self.confirm_dialog = Some(
-                            screen::ConfirmDialog::new(
-                                "Proxy changes saved. Restart now to apply?".to_string(),
-                                Box::new(Message::RestartRequested(None)),
-                            )
-                            .with_confirm_btn_text("Restart now".to_string()),
-                        );
+                        self.confirm_dialog = self
+                            .network_config
+                            .requires_restart_from(&self.running_network_config)
+                            .then(|| {
+                                screen::ConfirmDialog::new(
+                                    "Proxy changes saved. Restart now to apply?".to_string(),
+                                    Box::new(Message::RestartRequested(None)),
+                                )
+                                .with_confirm_btn_text("Restart now".to_string())
+                            });
 
                         let main_window = self.main_window.id;
                         let dashboard = self.active_dashboard_mut();
@@ -1562,13 +1553,16 @@ impl Flowsurface {
                         self.network_config.server_auth_token = auth_token;
                         self.network_config.trade_fetch_mode = mode;
 
-                        self.confirm_dialog = Some(
-                            screen::ConfirmDialog::new(
-                                "Trade fetch mode changed. Restart now to apply?".to_string(),
-                                Box::new(Message::RestartRequested(None)),
-                            )
-                            .with_confirm_btn_text("Restart now".to_string()),
-                        );
+                        self.confirm_dialog = self
+                            .network_config
+                            .requires_restart_from(&self.running_network_config)
+                            .then(|| {
+                                screen::ConfirmDialog::new(
+                                    "Trade fetch mode changed. Restart now to apply?".to_string(),
+                                    Box::new(Message::RestartRequested(None)),
+                                )
+                                .with_confirm_btn_text("Restart now".to_string())
+                            });
 
                         let main_window = self.main_window.id;
                         let mut active_windows = self
@@ -1641,7 +1635,7 @@ impl Flowsurface {
                         self.network_config.quantwheel_session_cookie = session_cookie.clone();
                         self.quantwheel_gex_client =
                             exchange::options::quantwheel::QuantWheelGexClient::new(
-                                self.network_config.proxy.as_ref(),
+                                self.running_network_config.proxy.as_ref(),
                                 session_cookie.as_deref(),
                             )
                             .map_err(|error| {
@@ -1664,10 +1658,7 @@ impl Flowsurface {
 
                 match action {
                     Some(dashboard::sidebar::Action::MenuChanged(Some(sidebar::Menu::Network))) => {
-                        self.network_editor = NetworkEditor::new(
-                            &self.network_config,
-                            self.network_editor.pending_apply().cloned(),
-                        );
+                        self.network_editor = NetworkEditor::new(&self.network_config);
                     }
                     Some(dashboard::sidebar::Action::MenuChanged(_)) => {}
                     Some(dashboard::sidebar::Action::AddViewSelected(kind)) => {
@@ -1716,7 +1707,7 @@ impl Flowsurface {
                 return task.map(Message::Sidebar);
             }
             Message::ApplyVolumeSizeUnit(pref) => {
-                self.volume_size_unit = pref;
+                self.settings.volume_size_unit = pref;
                 self.confirm_dialog = None;
 
                 let mut active_windows: Vec<window::Id> =
@@ -1922,7 +1913,7 @@ impl Flowsurface {
                 .view(
                     &self.main_window,
                     tickers_table,
-                    self.timezone,
+                    self.settings.timezone,
                     self.windowing_mode.allows_native_popout(),
                 )
                 .map(move |msg| Message::Dashboard {
@@ -1989,7 +1980,7 @@ impl Flowsurface {
                         id,
                         &self.main_window,
                         tickers_table,
-                        self.timezone,
+                        self.settings.timezone,
                         self.windowing_mode.allows_native_popout(),
                     )
                     .map(move |msg| Message::Dashboard {
@@ -2149,7 +2140,7 @@ impl Flowsurface {
     }
 
     fn scale_factor(&self, _window: window::Id) -> f32 {
-        self.ui_scale_factor.into()
+        self.settings.ui_scale_factor.into()
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -2164,7 +2155,10 @@ impl Flowsurface {
         let layout_id = self.layout_manager.active_layout_id().map(|id| id.unique);
         let news = self
             .active_dashboard()
-            .news_subscriptions(self.main_window.id, self.network_config.proxy.as_ref())
+            .news_subscriptions(
+                self.main_window.id,
+                self.running_network_config.proxy.as_ref(),
+            )
             .with(layout_id)
             .map(|(layout_id, event)| Message::Dashboard { layout_id, event });
         let tick = iced::time::every(Duration::from_millis(16)).map(Message::Tick);
@@ -2333,311 +2327,12 @@ impl Flowsurface {
 
         match menu {
             sidebar::Menu::Settings => {
-                let settings_modal = {
-                    let theme_picklist = {
-                        let mut themes: Vec<iced::Theme> = iced_core::Theme::ALL.to_vec();
-
-                        let default_theme = iced_core::Theme::Custom(default_theme().into());
-                        themes.push(default_theme);
-
-                        if let Some(custom_theme) = &self.theme_editor.custom_theme {
-                            themes.push(custom_theme.clone());
-                        }
-
-                        pick_list(themes, Some(self.theme.0.clone()), |theme| {
-                            Message::ThemeSelected(theme)
-                        })
-                    };
-
-                    let toggle_theme_editor = button(text("Theme editor")).on_press(
-                        Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(Some(
-                            sidebar::Menu::ThemeEditor,
-                        ))),
-                    );
-
-                    let timezone_picklist = pick_list(
-                        [data::UserTimezone::Utc, data::UserTimezone::Local],
-                        Some(self.timezone),
-                        Message::SetTimezone,
-                    );
-
-                    let size_in_quote_ccy_checkbox = {
-                        let is_active = match self.volume_size_unit {
-                            exchange::SizeUnit::Quote => true,
-                            exchange::SizeUnit::Base => false,
-                        };
-
-                        let checkbox = iced::widget::checkbox(is_active)
-                            .label("Size in quote currency")
-                            .on_toggle(|checked| {
-                                let on_dialog_confirm = Message::ApplyVolumeSizeUnit(if checked {
-                                    exchange::SizeUnit::Quote
-                                } else {
-                                    exchange::SizeUnit::Base
-                                });
-
-                                let confirm_dialog = screen::ConfirmDialog::new(
-                                    "Changing size display currency requires application restart"
-                                        .to_string(),
-                                    Box::new(on_dialog_confirm.clone()),
-                                )
-                                .with_confirm_btn_text("Restart now".to_string());
-
-                                Message::ToggleDialogModal(Some(confirm_dialog))
-                            });
-
-                        tooltip(
-                            checkbox,
-                            Some(
-                                "Display sizes/volumes in quote currency (USD).\n- Has no effect on inverse perps or open interest",
-                            ),
-                            TooltipPosition::Top,
-                        )
-                    };
-
-                    let cache_metadata_checkbox = {
-                        let cache_enabled = self.sidebar.cache_enabled();
-
-                        let checkbox = tooltip(
-                            iced::widget::checkbox(cache_enabled)
-                                .label("Cache ticker metadata")
-                                .on_toggle(Message::SetMetadataCaching),
-                            Some("Cache ticker metadata for faster startup."),
-                            TooltipPosition::Top,
-                        );
-
-                        if !cache_enabled {
-                            column![row![checkbox].height(24).align_y(iced::Alignment::Center)]
-                        } else {
-                            let loading = self.sidebar.is_metadata_loading();
-
-                            let refresh_btn = {
-                                let btn = button(crate::style::icon_text(
-                                    crate::style::Icon::Refresh,
-                                    12,
-                                ))
-                                .style(move |theme, status| {
-                                    style::button::modifier(theme, status, loading)
-                                });
-                                let btn = if loading {
-                                    btn
-                                } else {
-                                    btn.on_press(Message::RefreshMetadata)
-                                };
-
-                                tooltip(
-                                    btn,
-                                    if loading { None } else { Some("Refresh now") },
-                                    TooltipPosition::Top,
-                                )
-                            };
-
-                            let last_updated = {
-                                let last_update = self.sidebar.last_metadata_update();
-
-                                let label = if loading {
-                                    "Refreshing metadata…".to_string()
-                                } else {
-                                    match last_update {
-                                        Some(at) => {
-                                            format!(
-                                                "Metadata last update: {}",
-                                                data::util::relative_time_label(at)
-                                            )
-                                        }
-                                        None => "Metadata not fetched yet".to_string(),
-                                    }
-                                };
-
-                                text(label)
-                                    .size(crate::style::text_size::SMALL)
-                                    .style(style::secondary_text)
-                            };
-
-                            column![
-                                row![checkbox, refresh_btn]
-                                    .align_y(iced::Alignment::Center)
-                                    .spacing(8),
-                                last_updated,
-                            ]
-                            .spacing(4)
-                        }
-                    };
-
-                    let sidebar_pos_picklist = pick_list(
-                        [sidebar::Position::Left, sidebar::Position::Right],
-                        Some(sidebar_pos),
-                        |pos| {
-                            Message::Sidebar(dashboard::sidebar::Message::SetSidebarPosition(pos))
-                        },
-                    );
-
-                    let scale_factor = {
-                        let current_value: f32 = self.ui_scale_factor.into();
-
-                        let decrease_btn = if current_value > data::config::MIN_SCALE {
-                            button(text("-"))
-                                .on_press(Message::ScaleFactorChanged((current_value - 0.1).into()))
-                        } else {
-                            button(text("-"))
-                        };
-
-                        let increase_btn = if current_value < data::config::MAX_SCALE {
-                            button(text("+"))
-                                .on_press(Message::ScaleFactorChanged((current_value + 0.1).into()))
-                        } else {
-                            button(text("+"))
-                        };
-
-                        container(
-                            row![
-                                decrease_btn,
-                                text(format!("{:.0}%", current_value * 100.0))
-                                    .size(crate::style::text_size::SECTION),
-                                increase_btn,
-                            ]
-                            .align_y(Alignment::Center)
-                            .spacing(8)
-                            .padding(4),
-                        )
-                        .style(style::modal_container)
-                    };
-
-                    let debug_terminal_checkbox = {
-                        let checkbox = iced::widget::checkbox(self.debug_terminal.enabled())
-                            .label("Debug terminal")
-                            .on_toggle(Message::ToggleDebugTerminal);
-
-                        tooltip(
-                            checkbox,
-                            Some("Open a popup terminal with detailed application logs"),
-                            TooltipPosition::Top,
-                        )
-                    };
-
-                    let open_data_folder = {
-                        let button =
-                            button(text("Open data folder")).on_press(Message::DataFolderRequested);
-
-                        tooltip(
-                            button,
-                            Some("Open the folder where the data & config is stored"),
-                            TooltipPosition::Top,
-                        )
-                    };
-
-                    let invalidate_market_data_cache = {
-                        let clear_button = button(text("Invalidate market-data cache")).on_press(
-                            Message::ToggleDialogModal(Some(
-                                screen::ConfirmDialog::new(
-                                    "This deletes all cached market data and restarts indicator analysis. Continue?"
-                                        .to_string(),
-                                    Box::new(Message::InvalidateMarketDataCache),
-                                )
-                                .with_confirm_btn_text("Invalidate cache".to_string()),
-                            )),
-                        );
-
-                        tooltip(
-                            clear_button,
-                            Some(
-                                "Delete cached klines, trades, open interest and bubble summaries, then fetch them again",
-                            ),
-                            TooltipPosition::Top,
-                        )
-                    };
-
-                    let version_info = {
-                        let (version_label, commit_label) = version::app_build_version_parts();
-
-                        let github_link_button =
-                            button(text(version_label).size(crate::style::text_size::EMPHASIS))
-                                .padding(0)
-                                .style(style::button::text_link)
-                                .on_press(Message::OpenUrlRequested(Cow::Borrowed(
-                                    version::GITHUB_REPOSITORY_URL,
-                                )));
-
-                        let github_button: Element<'_, Message> = iced::widget::tooltip(
-                            github_link_button,
-                            container(
-                                row![
-                                    text("GitHub"),
-                                    style::icon_text(style::Icon::ExternalLink, 12),
-                                ]
-                                .spacing(4)
-                                .align_y(Alignment::Center),
-                            )
-                            .style(style::tooltip)
-                            .padding(8),
-                            TooltipPosition::Top,
-                        )
-                        .into();
-
-                        if let (Some(commit_label), Some(commit_url)) =
-                            (commit_label, version::build_commit_url())
-                        {
-                            let commit_button =
-                                button(text(commit_label).size(crate::style::text_size::SMALL))
-                                    .padding(0)
-                                    .style(style::button::text_link_secondary)
-                                    .on_press(Message::OpenUrlRequested(Cow::Owned(commit_url)));
-
-                            column![github_button, commit_button]
-                                .spacing(2)
-                                .align_x(Alignment::End)
-                                .into()
-                        } else {
-                            github_button
-                        }
-                    };
-
-                    let footer = column![
-                        container(version_info)
-                            .width(iced::Length::Fill)
-                            .align_x(Alignment::End),
-                    ]
-                    .spacing(8);
-
-                    let column_content = split_column![
-                        column![open_data_folder,].spacing(8),
-                        column![text("Sidebar position").size(crate::style::text_size::SECTION), sidebar_pos_picklist,].spacing(12),
-                        column![text("Time zone").size(crate::style::text_size::SECTION), timezone_picklist,].spacing(12),
-                        column![
-                            text("Market data").size(crate::style::text_size::SECTION),
-                            size_in_quote_ccy_checkbox,
-                            cache_metadata_checkbox,
-                            invalidate_market_data_cache,
-                        ].spacing(12),
-                        column![text("Theme").size(crate::style::text_size::SECTION), theme_picklist,].spacing(12),
-                        column![text("Interface scale").size(crate::style::text_size::SECTION), scale_factor,].spacing(12),
-                        column![
-                            text("Experimental").size(crate::style::text_size::SECTION),
-                            column![
-                                debug_terminal_checkbox,
-                                toggle_theme_editor
-                            ]
-                            .spacing(8),
-                        ]
-                        .spacing(12),
-                        footer,
-                        ; spacing = 16, align_x = Alignment::Start
-                    ];
-
-                    let content = scrollable::Scrollable::with_direction(
-                        column_content,
-                        scrollable::Direction::Vertical(
-                            scrollable::Scrollbar::new().width(8).scroller_width(6),
-                        ),
-                    );
-
-                    container(content)
-                        .align_x(Alignment::Start)
-                        .width(iced::Length::Fit.max(240))
-                        .padding(24)
-                        .style(style::dashboard_modal)
-                };
-
+                let settings_modal = self.settings.view(
+                    &self.theme.0,
+                    self.theme_editor.custom_theme.as_ref(),
+                    &self.sidebar,
+                    self.debug_terminal.enabled(),
+                );
                 let (align_x, padding) = match sidebar_pos {
                     sidebar::Position::Left => (Alignment::Start, padding::left(44).bottom(4)),
                     sidebar::Position::Right => (Alignment::End, padding::right(44).bottom(4)),
@@ -2767,7 +2462,11 @@ impl Flowsurface {
                 let base_content = dashboard_modal(
                     base,
                     self.network_editor
-                        .view(&self.network_config)
+                        .view(
+                            &self.network_config,
+                            self.network_config
+                                .requires_restart_from(&self.running_network_config),
+                        )
                         .map(Message::NetworkEditor),
                     Message::Sidebar(dashboard::sidebar::Message::ToggleSidebarMenu(None)),
                     padding,
@@ -2835,12 +2534,12 @@ impl Flowsurface {
             self.theme.clone(),
             self.theme_editor.custom_theme.clone().map(data::Theme),
             main_window_spec,
-            self.timezone,
+            self.settings.timezone,
             self.sidebar.state.clone(),
-            self.ui_scale_factor,
+            self.settings.ui_scale_factor,
             audio_cfg,
             self.network_config.for_persistence(),
-            self.volume_size_unit,
+            self.settings.volume_size_unit,
             self.debug_terminal.enabled(),
             self.sidebar.cache_enabled(),
         );

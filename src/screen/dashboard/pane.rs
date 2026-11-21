@@ -633,17 +633,13 @@ impl State {
                         .visual_config
                         .clone()
                         .and_then(|cfg| cfg.time_and_sales());
-                    let content = Content::TimeAndSales(Some(TimeAndSales::new(
-                        config,
-                        derived_plan.ticker_info,
-                    )));
+                    let content =
+                        Content::TimeAndSales(Some(TimeAndSales::new(config, tickers.len())));
 
-                    let temp = PaneSetup {
-                        push_freq: exchange::PushFrequency::ServerDefault,
-                        ..derived_plan
-                    };
-
-                    let streams = vec![trades_stream(&temp)];
+                    let streams = tickers
+                        .iter()
+                        .map(|&ticker_info| StreamKind::Trades { ticker_info })
+                        .collect();
 
                     (content, streams)
                 }
@@ -2346,6 +2342,9 @@ impl State {
                     let crate::modal::pane::mini_tickers_list::Action::RowSelected(sel) = action;
                     match sel {
                         crate::modal::pane::mini_tickers_list::RowSelection::Add(ti) => {
+                            if matches!(self.content, Content::TimeAndSales(Some(_))) {
+                                return self.change_timesales_ticker(sel);
+                            }
                             if let Content::Comparison(chart) = &mut self.content
                                 && let Some(c) = chart
                             {
@@ -2355,6 +2354,9 @@ impl State {
                             }
                         }
                         crate::modal::pane::mini_tickers_list::RowSelection::Remove(ti) => {
+                            if matches!(self.content, Content::TimeAndSales(Some(_))) {
+                                return self.change_timesales_ticker(sel);
+                            }
                             if let Content::Comparison(chart) = &mut self.content
                                 && let Some(c) = chart
                             {
@@ -2371,6 +2373,46 @@ impl State {
             }
         }
         None
+    }
+
+    fn change_timesales_ticker(
+        &mut self,
+        selection: crate::modal::pane::mini_tickers_list::RowSelection,
+    ) -> Option<Effect> {
+        let ResolvedStream::Ready(streams) = &mut self.streams else {
+            return None;
+        };
+        match selection {
+            crate::modal::pane::mini_tickers_list::RowSelection::Add(ticker_info) => {
+                if streams
+                    .iter()
+                    .any(|stream| stream.ticker_info().ticker == ticker_info.ticker)
+                {
+                    return None;
+                }
+                streams.push(StreamKind::Trades { ticker_info });
+            }
+            crate::modal::pane::mini_tickers_list::RowSelection::Remove(ticker_info) => {
+                if streams
+                    .first()
+                    .is_some_and(|stream| stream.ticker_info().ticker == ticker_info.ticker)
+                {
+                    return None;
+                }
+                let previous_len = streams.len();
+                streams.retain(|stream| stream.ticker_info().ticker != ticker_info.ticker);
+                if streams.len() == previous_len {
+                    return None;
+                }
+            }
+            crate::modal::pane::mini_tickers_list::RowSelection::Switch(_) => return None,
+        }
+
+        if let Content::TimeAndSales(Some(panel)) = &mut self.content {
+            let tickers: Vec<_> = streams.iter().map(|stream| stream.ticker_info()).collect();
+            panel.set_sources(&tickers);
+        }
+        Some(Effect::RefreshStreams)
     }
 
     pub fn dismiss_drawing_interaction(&mut self) -> bool {
@@ -2528,11 +2570,19 @@ impl State {
                 Alignment::Start,
             ),
             Some(Modal::MiniTickersList(panel)) => {
-                let mini_list = panel
-                    .view(tickers_table, selected_tickers, self.stream_pair())
-                    .map(move |msg| {
-                        Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg))
-                    });
+                let tickers = if matches!(self.content, Content::TimeAndSales(Some(_))) {
+                    self.streams
+                        .ready_iter()
+                        .map(|streams| streams.map(StreamKind::ticker_info).collect())
+                } else {
+                    selected_tickers.map(<[_]>::to_vec)
+                };
+                let mini_list =
+                    panel
+                        .view(tickers_table, tickers, self.stream_pair())
+                        .map(move |msg| {
+                            Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg))
+                        });
 
                 let content: Element<_> = container(mini_list)
                     .width(iced::Length::Fit.max(260))
@@ -3213,7 +3263,7 @@ impl Content {
                 refresh_streams
             }
             (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
-                panel.config = cfg;
+                panel.set_config(cfg);
                 false
             }
             (Content::Ladder(Some(panel)), VisualConfig::Ladder(cfg)) => {
@@ -3507,6 +3557,50 @@ mod tests {
             0.001,
             None,
         )
+    }
+
+    #[test]
+    fn tape_picker_and_restore_keep_source_order_and_protect_the_primary() {
+        use crate::modal::pane::mini_tickers_list::{Message as PickerMessage, RowSelection};
+        let primary = ticker();
+        let other = TickerInfo::new(
+            Ticker::new("ETHUSDT", Exchange::BinanceSpot),
+            0.1,
+            0.01,
+            None,
+        );
+        let mut state = State::default();
+        state.set_content_and_streams(vec![primary], ContentKind::TimeAndSales);
+        state.modal = Some(Modal::MiniTickersList(Default::default()));
+        let select = |state: &mut State, selection| {
+            state.update(Event::MiniTickersListInteraction(
+                PickerMessage::RowSelected(selection),
+            ))
+        };
+        assert!(matches!(
+            select(&mut state, RowSelection::Add(other)),
+            Some(Effect::RefreshStreams)
+        ));
+        assert!(select(&mut state, RowSelection::Add(other)).is_none());
+        assert!(select(&mut state, RowSelection::Remove(primary)).is_none());
+        let restored =
+            state.set_content_and_streams(vec![primary, other], ContentKind::TimeAndSales);
+        assert_eq!(
+            restored,
+            [
+                StreamKind::Trades {
+                    ticker_info: primary
+                },
+                StreamKind::Trades { ticker_info: other }
+            ]
+        );
+        assert!(matches!(
+            select(&mut state, RowSelection::Remove(other)),
+            Some(Effect::RefreshStreams)
+        ));
+        assert!(
+            matches!(state.stream_pair_kind(), Some(StreamPairKind::SingleSource(t)) if t == primary)
+        );
     }
 
     fn gex_state(config: data::chart::gex::Config) -> State {

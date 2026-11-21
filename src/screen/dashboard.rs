@@ -144,12 +144,6 @@ impl Default for Dashboard {
 #[derive(Debug, Clone)]
 pub enum Event {
     Notification(Toast),
-    DistributeFetchedData {
-        layout_id: uuid::Uuid,
-        pane_id: uuid::Uuid,
-        data: FetchedData,
-        stream: StreamKind,
-    },
     ResolveStreams {
         pane_id: uuid::Uuid,
         streams: Vec<PersistStreamKind>,
@@ -731,8 +725,8 @@ impl Dashboard {
                 }
                 _ => {
                     return (
-                        Task::done(Message::Notification(Toast::error(err.to_string()))),
-                        None,
+                        Task::none(),
+                        Some(Event::Notification(Toast::error(err.to_string()))),
                     );
                 }
             },
@@ -1017,20 +1011,17 @@ impl Dashboard {
                 }
             }
             Message::DistributeFetchedData {
-                layout_id,
+                layout_id: source_layout,
                 pane_id,
                 data,
                 stream,
             } => {
-                return (
-                    Task::none(),
-                    Some(Event::DistributeFetchedData {
-                        layout_id,
-                        pane_id,
-                        data,
-                        stream,
-                    }),
-                );
+                if source_layout == *layout_id {
+                    return (
+                        self.distribute_fetched_data(main_window.id, pane_id, data, stream, false),
+                        None,
+                    );
+                }
             }
             Message::BackfillFetchUpdate {
                 pane_ids,
@@ -2434,7 +2425,7 @@ impl Dashboard {
                         }
                         pane::Content::TimeAndSales(panel) => {
                             if let Some(p) = panel {
-                                p.insert_buffer(buffer);
+                                p.insert_buffer(stream.ticker_info(), buffer);
                                 content_updates.push("TimeAndSales");
                             }
                         }
