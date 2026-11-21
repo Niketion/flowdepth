@@ -79,7 +79,7 @@ impl Settings {
             tooltip(
                 checkbox,
                 Some(
-                    "Display sizes/volumes in quote currency (USD).\n- Has no effect on inverse perps or open interest",
+                    "Display sizes/volumes in quote currency (USD).\n- Has no effect on inverse perps or open interest\n- Multi-ticker Time & Sales always shows quote values",
                 ),
                 TooltipPosition::Top,
             )

@@ -450,7 +450,7 @@ impl ProxyForm {
 
             let mut lines = column![
                 row![
-                    text("Effective:").size(crate::style::text_size::SMALL),
+                    text("Saved:").size(crate::style::text_size::SMALL),
                     text(effective).size(crate::style::text_size::BODY),
                 ]
                 .spacing(4)

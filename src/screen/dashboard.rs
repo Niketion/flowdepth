@@ -2581,6 +2581,30 @@ impl Dashboard {
         Task::batch(tasks)
     }
 
+    pub fn resolve_tape_streams(
+        &mut self,
+        main_window: window::Id,
+        pane_id: uuid::Uuid,
+        configured: &[PersistStreamKind],
+        metadata: impl FnMut(&exchange::Ticker) -> Option<TickerInfo>,
+    ) -> Option<Result<Task<Message>, String>> {
+        let state = self.get_mut_pane_state_by_uuid(main_window, pane_id)?;
+        if !matches!(state.content, pane::Content::TimeAndSales(_)) {
+            return None;
+        }
+        Some(
+            state
+                .restore_tape_sources(configured.to_vec(), metadata)
+                .map(|changed| {
+                    if changed {
+                        self.refresh_streams(main_window)
+                    } else {
+                        Task::none()
+                    }
+                }),
+        )
+    }
+
     pub fn resolve_streams(
         &mut self,
         main_window: window::Id,

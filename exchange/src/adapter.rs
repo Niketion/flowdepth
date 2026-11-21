@@ -228,7 +228,11 @@ impl UniqueStreams {
     }
 
     pub fn trade_streams(&self, exchange_filter: Option<Exchange>) -> Vec<TickerInfo> {
-        self.streams(exchange_filter, |_, stream| stream.as_trade_stream())
+        let mut streams = self.streams(exchange_filter, |_, stream| stream.as_trade_stream());
+        // Adapters deliver one trade feed per ticker. Use a stable metadata
+        // representative even if panes were opened against different snapshots.
+        streams.dedup_by_key(|info| info.ticker);
+        streams
     }
 
     pub fn combined_used(&self) -> impl Iterator<Item = (Exchange, &StreamSpecs)> {
@@ -258,6 +262,20 @@ fn default_depth_aggr() -> StreamTicksize {
 #[cfg(test)]
 mod stream_order_tests {
     use super::*;
+
+    #[test]
+    fn ticker_metadata_does_not_duplicate_trade_subscriptions() {
+        let ticker = crate::Ticker::new("BTCUSDT", Exchange::BinanceLinear);
+        let original = TickerInfo::new(ticker, 0.01, 0.001, None);
+        let updated = TickerInfo::new(ticker, 0.1, 0.001, None);
+        let streams = [original, updated].map(|ticker_info| StreamKind::Trades { ticker_info });
+        for unique in [
+            UniqueStreams::from(streams.iter()),
+            UniqueStreams::from(streams.iter().rev()),
+        ] {
+            assert_eq!(unique.trade_streams(None), [original]);
+        }
+    }
 
     #[test]
     fn subscription_specs_are_stable_across_pane_order_and_duplicates() {

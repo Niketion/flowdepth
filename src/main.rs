@@ -1094,34 +1094,35 @@ impl Flowsurface {
                         Some(dashboard::Event::ResolveStreams { pane_id, streams }) => {
                             let tickers_info = self.sidebar.tickers_info();
 
-                            let resolved_streams =
-                                streams.into_iter().try_fold(vec![], |mut acc, persist| {
-                                    let resolver = |t: &exchange::Ticker| {
-                                        tickers_info.get(t).and_then(|opt| *opt)
-                                    };
-
-                                    match persist.into_stream_kinds(resolver) {
-                                        Ok(mut resolved) => {
-                                            acc.append(&mut resolved);
+                            let resolver =
+                                |t: &exchange::Ticker| tickers_info.get(t).and_then(|opt| *opt);
+                            let resolved_streams = dashboard
+                                .resolve_tape_streams(main_window.id, pane_id, &streams, resolver)
+                                .unwrap_or_else(|| {
+                                    streams
+                                        .into_iter()
+                                        .try_fold(vec![], |mut acc, persist| {
+                                            acc.extend(persist.into_stream_kinds(resolver)?);
                                             Ok(acc)
-                                        }
-                                        Err(err) => Err(err),
-                                    }
+                                        })
+                                        .map(|resolved| {
+                                            if resolved.is_empty() {
+                                                Task::none()
+                                            } else {
+                                                dashboard.resolve_streams(
+                                                    main_window.id,
+                                                    pane_id,
+                                                    resolved,
+                                                )
+                                            }
+                                        })
                                 });
 
                             match resolved_streams {
-                                Ok(resolved) => {
-                                    if resolved.is_empty() {
-                                        Task::none()
-                                    } else {
-                                        dashboard
-                                            .resolve_streams(main_window.id, pane_id, resolved)
-                                            .map(move |msg| Message::Dashboard {
-                                                layout_id: None,
-                                                event: msg,
-                                            })
-                                    }
-                                }
+                                Ok(task) => task.map(move |msg| Message::Dashboard {
+                                    layout_id: None,
+                                    event: msg,
+                                }),
                                 Err(err) => {
                                     if self.sidebar.is_metadata_loading() {
                                         // Metadata fetches are still in flight

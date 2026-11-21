@@ -126,6 +126,9 @@ impl TimeAndSales {
     }
 
     fn resume_buffer(&mut self) {
+        if self.paused_trades_buffer.is_empty() {
+            return;
+        }
         let incoming = self.paused_trades_buffer.drain(..).collect();
         TapeTrade::merge_into(&mut self.recent_trades, incoming);
         self.rebuild_metrics();
@@ -436,7 +439,11 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
             // Feed
             let row_height = TRADE_ROW_HEIGHT;
             let row_width = bounds.width;
-            let [source_column, price_column, size_column, time_column] = trade_column_bounds(
+            let TradeColumns {
+                cells: [source_column, price_column, size_column, time_column],
+                time_format,
+                text_size,
+            } = trade_columns(
                 row_width,
                 self.panel.config.ticker_display,
                 self.panel.config.time_format,
@@ -487,7 +494,7 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
                 |content: String, position: Point, align_x: Alignment, color: iced::Color| Text {
                     content,
                     position,
-                    size: TEXT_SIZE,
+                    size: text_size,
                     font: style::AZERET_MONO,
                     color,
                     align_x: align_x.into(),
@@ -578,7 +585,7 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
                         ticker_column,
                     );
                 }
-                let trade_price = create_text(
+                let mut trade_price = create_text(
                     entry.price.to_string(entry.ticker_info().min_ticksize),
                     Point {
                         x: price_column.0,
@@ -587,9 +594,10 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
                     Alignment::Start,
                     text_color,
                 );
+                fit_number(&mut trade_price, price_column);
                 draw_cell(frame, trade_price, price_column);
 
-                let trade_qty = create_text(
+                let mut trade_qty = create_text(
                     entry.quantity_text(self.panel.multiple_tickers),
                     Point {
                         x: size_column.0,
@@ -598,13 +606,14 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
                     Alignment::Start,
                     text_color,
                 );
+                fit_number(&mut trade_qty, size_column);
                 draw_cell(frame, trade_qty, size_column);
 
                 let trade_time = create_text(
                     self.timezone
                         .format_with_kind(
                             entry.time.as_u64() as i64,
-                            TimeLabelKind::Custom(self.panel.config.time_format.pattern()),
+                            TimeLabelKind::Custom(time_format.pattern()),
                         )
                         .unwrap_or_default(),
                     Point {
@@ -695,47 +704,97 @@ impl canvas::Program<Message> for TimeAndSalesView<'_> {
     }
 }
 
-fn trade_column_bounds(
-    width: f32,
-    display: TickerDisplay,
+fn fit_number(value: &mut Text, (left, right): (f32, f32)) {
+    let width = value.content.chars().count() as f32 * CHAR_WIDTH * (value.size.0 / TEXT_SIZE.0);
+    if width > right - left {
+        value.size.0 *= (right - left) / width;
+    }
+}
+
+struct TradeColumns {
+    cells: [(f32, f32); 4],
     time_format: TimeFormat,
-) -> [(f32, f32); 4] {
-    let time_chars = match time_format {
-        TimeFormat::MinutesSecondsMillis => 9,
-        TimeFormat::HoursMinutesSecondsMillis => 12,
-        TimeFormat::HoursMinutesSeconds => 8,
+    text_size: iced::Pixels,
+}
+
+fn trade_columns(width: f32, display: TickerDisplay, time_format: TimeFormat) -> TradeColumns {
+    let time_chars = |format| match format {
+        TimeFormat::MinutesSecondsMillis => 9.0,
+        TimeFormat::HoursMinutesSecondsMillis => 12.0,
+        TimeFormat::HoursMinutesSeconds => 8.0,
     };
 
-    let source_width = TEXT_SIZE.0
-        + if display == TickerDisplay::IconAndTicker {
-            TICKER_LABEL_GAP + (16.0 * CHAR_WIDTH).ceil()
+    let ticker_displayed = display == TickerDisplay::IconAndTicker;
+    let source_base = if ticker_displayed {
+        TEXT_SIZE.0 + TICKER_LABEL_GAP
+    } else {
+        TEXT_SIZE.0
+    };
+    let left = COLUMN_PADDING.min(width / 2.0);
+    let right = (width - COLUMN_PADDING).max(left);
+    let available = (right - left - 3.0 * COLUMN_GAP).max(0.0);
+    let ticker_chars = if ticker_displayed { 6.0 } else { 0.0 };
+    let compact = available
+        < source_base + (ticker_chars + 12.0 + 9.0 + time_chars(time_format)) * CHAR_WIDTH;
+    let (text_size, time_format) = if compact {
+        (iced::Pixels(9.0), TimeFormat::HoursMinutesSeconds)
+    } else {
+        (TEXT_SIZE, time_format)
+    };
+    let min_gap = if compact { 6.0 } else { COLUMN_GAP };
+    let available = (right - left - 3.0 * min_gap).max(0.0);
+    let char_width = CHAR_WIDTH * (text_size.0 / TEXT_SIZE.0);
+    let min_source_width = source_base + ticker_chars * char_width;
+    let max_source_width = source_base
+        + if ticker_displayed {
+            (16.0 * char_width).ceil()
         } else {
             0.0
         };
-    let widths = [
-        source_width,
-        (12.0 * CHAR_WIDTH).ceil(),
-        (9.0 * CHAR_WIDTH).ceil(),
-    ];
-
-    let time_width = (time_chars as f32 * CHAR_WIDTH).ceil();
-    let left = COLUMN_PADDING.min(width / 2.0);
-    let right = (width - COLUMN_PADDING).max(left);
-    let time_left = (right - time_width).max(left);
-    let content_width: f32 = widths.iter().sum();
-
-    let gap = ((right - left - time_width - content_width) / 3.0).max(COLUMN_GAP);
-    let available = (time_left - left - gap * 3.0).max(0.0);
-    let scale = (available / content_width).min(1.0);
-    let content_right = (time_left - gap).max(left);
+    let price_width = (12.0 * char_width).ceil().min(available);
+    let time_width = (time_chars(time_format) * char_width)
+        .ceil()
+        .min(available - price_width);
+    let remaining = available - price_width - time_width;
+    let size_width = (9.0 * char_width)
+        .ceil()
+        .min((remaining - min_source_width).max(0.0));
+    let source_width = max_source_width.min(remaining - size_width);
+    let widths = [source_width, price_width, size_width];
+    let gap = ((right - left - time_width - widths.iter().sum::<f32>()) / 3.0).max(min_gap);
+    let time_left = right - time_width;
 
     let mut x = left;
     let mut columns = [(left, left); 4];
-    for (column, natural_width) in columns.iter_mut().zip(widths) {
-        let end = (x + natural_width * scale).min(content_right);
+    for (column, width) in columns.iter_mut().zip(widths) {
+        let end = (x + width).min(time_left);
         *column = (x, end);
-        x = (end + gap).min(content_right);
+        x = (end + gap).min(time_left);
     }
     columns[3] = (time_left, right);
-    columns
+    TradeColumns {
+        cells: columns,
+        time_format,
+        text_size,
+    }
+}
+
+#[cfg(test)]
+mod column_tests {
+    use super::*;
+
+    #[test]
+    fn narrow_tape_keeps_prices_readable_with_tickers_and_milliseconds_selected() {
+        let display = TickerDisplay::IconAndTicker;
+        let selected = TimeFormat::HoursMinutesSecondsMillis;
+        let narrow = trade_columns(240.0, display, selected);
+        let [_, price, size, _] = narrow.cells;
+        assert!(price.1 - price.0 >= "105000.00".len() as f32 * CHAR_WIDTH);
+        assert!(size.1 - size.0 >= 6.0 * CHAR_WIDTH * (narrow.text_size.0 / TEXT_SIZE.0));
+        assert_eq!(narrow.time_format, TimeFormat::HoursMinutesSeconds);
+        assert_eq!(
+            trade_columns(480.0, display, selected).time_format,
+            selected
+        );
+    }
 }

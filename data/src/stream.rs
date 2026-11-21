@@ -17,13 +17,15 @@ pub enum PersistStreamKind {
 }
 
 impl PersistStreamKind {
-    pub fn exchange(&self) -> exchange::adapter::Exchange {
+    pub fn ticker(&self) -> Ticker {
         match self {
-            PersistStreamKind::Kline { ticker, .. } => ticker.exchange,
-            PersistStreamKind::Depth(d) => d.ticker.exchange,
-            PersistStreamKind::Trades { ticker } => ticker.exchange,
-            PersistStreamKind::DepthAndTrades(d) => d.ticker.exchange,
+            Self::Kline { ticker, .. } | Self::Trades { ticker } => *ticker,
+            Self::Depth(depth) | Self::DepthAndTrades(depth) => depth.ticker,
         }
+    }
+
+    pub fn exchange(&self) -> exchange::adapter::Exchange {
+        self.ticker().exchange
     }
 }
 
