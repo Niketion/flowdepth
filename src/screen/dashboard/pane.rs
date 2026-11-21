@@ -131,6 +131,7 @@ pub enum Event {
     GexAssetSelected(GexChartAsset),
     HeatmapShaderInteraction(crate::widget::chart::heatmap::Message),
     MiniTickersListInteraction(modal::pane::mini_tickers_list::Message),
+    RemoveUnavailableTapeTicker(exchange::Ticker),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -633,17 +634,13 @@ impl State {
                         .visual_config
                         .clone()
                         .and_then(|cfg| cfg.time_and_sales());
-                    let content = Content::TimeAndSales(Some(TimeAndSales::new(
-                        config,
-                        derived_plan.ticker_info,
-                    )));
+                    let content =
+                        Content::TimeAndSales(Some(TimeAndSales::new(config, tickers.len())));
 
-                    let temp = PaneSetup {
-                        push_freq: exchange::PushFrequency::ServerDefault,
-                        ..derived_plan
-                    };
-
-                    let streams = vec![trades_stream(&temp)];
+                    let streams = tickers
+                        .iter()
+                        .map(|&ticker_info| StreamKind::Trades { ticker_info })
+                        .collect();
 
                     (content, streams)
                 }
@@ -970,6 +967,7 @@ impl State {
     fn has_stream(&self) -> bool {
         match &self.streams {
             ResolvedStream::Ready(streams) => !streams.is_empty(),
+            ResolvedStream::PartiallyReady { .. } => true,
             ResolvedStream::Waiting { streams, .. } => !streams.is_empty(),
             ResolvedStream::Blocked { streams, .. } => !streams.is_empty(),
         }
@@ -2306,6 +2304,9 @@ impl State {
                     c.update(message);
                 }
             }
+            Event::RemoveUnavailableTapeTicker(ticker) => {
+                return self.remove_tape_ticker(ticker);
+            }
             Event::MiniTickersListInteraction(message) => {
                 if let Some(Modal::GexLiquidityReference(ref mut mini_panel)) = self.modal
                     && let Some(action) = mini_panel.update(message.clone())
@@ -2346,6 +2347,9 @@ impl State {
                     let crate::modal::pane::mini_tickers_list::Action::RowSelected(sel) = action;
                     match sel {
                         crate::modal::pane::mini_tickers_list::RowSelection::Add(ti) => {
+                            if matches!(self.content, Content::TimeAndSales(Some(_))) {
+                                return self.change_timesales_ticker(sel);
+                            }
                             if let Content::Comparison(chart) = &mut self.content
                                 && let Some(c) = chart
                             {
@@ -2355,6 +2359,9 @@ impl State {
                             }
                         }
                         crate::modal::pane::mini_tickers_list::RowSelection::Remove(ti) => {
+                            if matches!(self.content, Content::TimeAndSales(Some(_))) {
+                                return self.change_timesales_ticker(sel);
+                            }
                             if let Content::Comparison(chart) = &mut self.content
                                 && let Some(c) = chart
                             {
@@ -2371,6 +2378,127 @@ impl State {
             }
         }
         None
+    }
+
+    fn change_timesales_ticker(
+        &mut self,
+        selection: crate::modal::pane::mini_tickers_list::RowSelection,
+    ) -> Option<Effect> {
+        match selection {
+            crate::modal::pane::mini_tickers_list::RowSelection::Add(ticker_info) => {
+                let mut configured = self.streams.clone().into_waiting();
+                if configured
+                    .iter()
+                    .any(|stream| stream.ticker() == ticker_info.ticker)
+                {
+                    return None;
+                }
+                let mut tickers = self
+                    .streams
+                    .ready_iter()?
+                    .map(StreamKind::ticker_info)
+                    .collect::<Vec<_>>();
+                configured.push(PersistStreamKind::Trades {
+                    ticker: ticker_info.ticker,
+                });
+                tickers.push(ticker_info);
+                self.set_tape_sources(configured, tickers);
+                Some(Effect::RefreshStreams)
+            }
+            crate::modal::pane::mini_tickers_list::RowSelection::Remove(ticker_info) => {
+                self.remove_tape_ticker(ticker_info.ticker)
+            }
+            crate::modal::pane::mini_tickers_list::RowSelection::Switch(_) => None,
+        }
+    }
+
+    fn remove_tape_ticker(&mut self, ticker: exchange::Ticker) -> Option<Effect> {
+        if !matches!(self.content, Content::TimeAndSales(Some(_)))
+            || self.stream_pair()?.ticker == ticker
+        {
+            return None;
+        }
+        let mut configured = self.streams.clone().into_waiting();
+        let previous_len = configured.len();
+        configured.retain(|stream| stream.ticker() != ticker);
+        if configured.len() == previous_len {
+            return None;
+        }
+        let tickers = self
+            .streams
+            .ready_iter()?
+            .map(StreamKind::ticker_info)
+            .filter(|info| info.ticker != ticker)
+            .collect();
+        self.set_tape_sources(configured, tickers);
+        Some(Effect::RefreshStreams)
+    }
+
+    pub(super) fn restore_tape_sources(
+        &mut self,
+        configured: Vec<PersistStreamKind>,
+        mut metadata: impl FnMut(&exchange::Ticker) -> Option<TickerInfo>,
+    ) -> Result<bool, String> {
+        // A queued retry can arrive after the user has edited the source list.
+        if configured != self.streams.clone().into_waiting() {
+            return Ok(false);
+        }
+        let mut seen = std::collections::HashSet::new();
+        let configured: Vec<_> = configured
+            .into_iter()
+            .map(|stream| stream.ticker())
+            .filter(|ticker| seen.insert(*ticker))
+            .map(|ticker| PersistStreamKind::Trades { ticker })
+            .collect();
+        let Some(primary) = configured.first().map(PersistStreamKind::ticker) else {
+            return Ok(false);
+        };
+        let current = self
+            .streams
+            .ready_iter()
+            .into_iter()
+            .flatten()
+            .map(StreamKind::ticker_info)
+            .collect::<Vec<_>>();
+        let mut lookup = |ticker| {
+            metadata(&ticker).or_else(|| current.iter().copied().find(|info| info.ticker == ticker))
+        };
+        let primary =
+            lookup(primary).ok_or_else(|| format!("Ticker metadata not found for {primary}"))?;
+        let tickers = std::iter::once(primary)
+            .chain(
+                configured
+                    .iter()
+                    .skip(1)
+                    .filter_map(|stream| lookup(stream.ticker())),
+            )
+            .collect::<Vec<_>>();
+        if current == tickers && matches!(self.content, Content::TimeAndSales(Some(_))) {
+            return Ok(false);
+        }
+        self.set_tape_sources(configured, tickers);
+        Ok(true)
+    }
+
+    fn set_tape_sources(&mut self, configured: Vec<PersistStreamKind>, tickers: Vec<TickerInfo>) {
+        if let Content::TimeAndSales(Some(panel)) = &mut self.content {
+            panel.set_sources(&tickers);
+        } else {
+            self.set_content_and_streams(tickers.clone(), ContentKind::TimeAndSales);
+        }
+        let ready = tickers
+            .into_iter()
+            .map(|ticker_info| StreamKind::Trades { ticker_info })
+            .collect::<Vec<_>>();
+        self.streams = if ready.len() == configured.len() {
+            ResolvedStream::Ready(ready)
+        } else {
+            ResolvedStream::PartiallyReady {
+                ready,
+                configured,
+                last_attempt: Some(Instant::now()),
+            }
+        };
     }
 
     pub fn dismiss_drawing_interaction(&mut self) -> bool {
@@ -2528,13 +2656,45 @@ impl State {
                 Alignment::Start,
             ),
             Some(Modal::MiniTickersList(panel)) => {
-                let mini_list = panel
-                    .view(tickers_table, selected_tickers, self.stream_pair())
-                    .map(move |msg| {
-                        Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg))
-                    });
+                let tickers = if matches!(self.content, Content::TimeAndSales(Some(_))) {
+                    self.streams
+                        .ready_iter()
+                        .map(|streams| streams.map(StreamKind::ticker_info).collect())
+                } else {
+                    selected_tickers.map(<[_]>::to_vec)
+                };
+                let mini_list =
+                    panel
+                        .view(tickers_table, tickers, self.stream_pair())
+                        .map(move |msg| {
+                            Message::PaneEvent(pane, Event::MiniTickersListInteraction(msg))
+                        });
 
-                let content: Element<_> = container(mini_list)
+                let mut sources = column![mini_list].spacing(8);
+                if let ResolvedStream::PartiallyReady {
+                    ready, configured, ..
+                } = &self.streams
+                {
+                    for ticker in configured.iter().map(PersistStreamKind::ticker) {
+                        if !ready
+                            .iter()
+                            .any(|stream| stream.ticker_info().ticker == ticker)
+                        {
+                            sources = sources.push(
+                                row![
+                                    text(format!("{ticker} (unavailable)"))
+                                        .width(iced::Length::Fill),
+                                    button(text("Remove")).on_press(Message::PaneEvent(
+                                        pane,
+                                        Event::RemoveUnavailableTapeTicker(ticker)
+                                    )),
+                                ]
+                                .spacing(8),
+                            );
+                        }
+                    }
+                }
+                let content: Element<_> = container(sources)
                     .width(iced::Length::Fit.max(260))
                     .padding(16)
                     .style(style::chart_modal)
@@ -3213,7 +3373,7 @@ impl Content {
                 refresh_streams
             }
             (Content::TimeAndSales(Some(panel)), VisualConfig::TimeAndSales(cfg)) => {
-                panel.config = cfg;
+                panel.set_config(cfg);
                 false
             }
             (Content::Ladder(Some(panel)), VisualConfig::Ladder(cfg)) => {
@@ -3507,6 +3667,133 @@ mod tests {
             0.001,
             None,
         )
+    }
+
+    #[test]
+    fn tape_picker_and_restore_keep_source_order_and_protect_the_primary() {
+        use crate::modal::pane::mini_tickers_list::{Message as PickerMessage, RowSelection};
+        let primary = ticker();
+        let other = TickerInfo::new(
+            Ticker::new("ETHUSDT", Exchange::BinanceSpot),
+            0.1,
+            0.01,
+            None,
+        );
+        let mut state = State::default();
+        state.set_content_and_streams(vec![primary], ContentKind::TimeAndSales);
+        state.modal = Some(Modal::MiniTickersList(Default::default()));
+        let select = |state: &mut State, selection| {
+            state.update(Event::MiniTickersListInteraction(
+                PickerMessage::RowSelected(selection),
+            ))
+        };
+        assert!(matches!(
+            select(&mut state, RowSelection::Add(other)),
+            Some(Effect::RefreshStreams)
+        ));
+        assert!(select(&mut state, RowSelection::Add(other)).is_none());
+        assert!(select(&mut state, RowSelection::Remove(primary)).is_none());
+        let restored =
+            state.set_content_and_streams(vec![primary, other], ContentKind::TimeAndSales);
+        assert_eq!(
+            restored,
+            [
+                StreamKind::Trades {
+                    ticker_info: primary
+                },
+                StreamKind::Trades { ticker_info: other }
+            ]
+        );
+        assert!(matches!(
+            select(&mut state, RowSelection::Remove(other)),
+            Some(Effect::RefreshStreams)
+        ));
+        assert!(
+            matches!(state.stream_pair_kind(), Some(StreamPairKind::SingleSource(t)) if t == primary)
+        );
+    }
+
+    #[test]
+    fn restored_tape_keeps_its_primary_and_retries_unavailable_secondaries() {
+        let primary = ticker();
+        let secondary = TickerInfo::new(
+            exchange::Ticker::new("ETHUSDT", primary.exchange()),
+            0.1,
+            0.001,
+            None,
+        );
+        let configured = [primary, secondary]
+            .map(|info| PersistStreamKind::Trades {
+                ticker: info.ticker,
+            })
+            .to_vec();
+        let mut state = State::from_config(
+            Content::TimeAndSales(None),
+            configured.clone(),
+            Settings::default(),
+            None,
+        );
+
+        assert!(
+            state
+                .restore_tape_sources(configured.clone(), |ticker| (*ticker == secondary.ticker)
+                    .then_some(secondary))
+                .is_err()
+        );
+        assert!(state.stream_pair().is_none());
+        assert_eq!(
+            state.restore_tape_sources(configured.clone(), |ticker| (*ticker == primary.ticker)
+                .then_some(primary)),
+            Ok(true)
+        );
+        assert!(matches!(state.content, Content::TimeAndSales(Some(_))));
+        assert_eq!(state.stream_pair(), Some(primary));
+        assert_eq!(state.streams.clone().into_waiting(), configured);
+        assert_eq!(
+            state.restore_tape_sources(configured.clone(), |ticker| (*ticker == secondary.ticker)
+                .then_some(secondary)),
+            Ok(true)
+        );
+        assert!(
+            matches!(state.stream_pair_kind(), Some(StreamPairKind::MultiSource(tickers)) if tickers == [primary, secondary])
+        );
+    }
+
+    #[test]
+    fn removed_unavailable_ticker_is_not_readded_by_a_queued_retry() {
+        let primary = ticker();
+        let secondary = exchange::Ticker::new("ETHUSDT", primary.exchange());
+        let configured = vec![
+            PersistStreamKind::Trades {
+                ticker: primary.ticker,
+            },
+            PersistStreamKind::Trades { ticker: secondary },
+        ];
+        let mut state = State::from_config(
+            Content::TimeAndSales(None),
+            configured.clone(),
+            Settings::default(),
+            None,
+        );
+        assert_eq!(
+            state.restore_tape_sources(configured.clone(), |ticker| (*ticker == primary.ticker)
+                .then_some(primary)),
+            Ok(true)
+        );
+        assert!(matches!(
+            state.update(Event::RemoveUnavailableTapeTicker(secondary)),
+            Some(Effect::RefreshStreams)
+        ));
+        assert_eq!(
+            state.restore_tape_sources(configured, |_| unreachable!()),
+            Ok(false)
+        );
+        assert_eq!(
+            state.streams.clone().into_waiting(),
+            [PersistStreamKind::Trades {
+                ticker: primary.ticker
+            }]
+        );
     }
 
     fn gex_state(config: data::chart::gex::Config) -> State {

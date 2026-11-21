@@ -1215,7 +1215,7 @@ impl TickersTable {
         on_select: FSelect,
         on_search: FSearch,
         on_scroll: FScroll,
-        selected_tickers: Option<&'a [TickerInfo]>,
+        selected_tickers: Option<&[TickerInfo]>,
         base_ticker: Option<TickerInfo>,
         underlying_filter: Option<exchange::options::OptionsUnderlying>,
         supported_options_only: bool,

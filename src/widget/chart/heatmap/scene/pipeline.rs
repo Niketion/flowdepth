@@ -8,9 +8,9 @@ use super::uniform::ParamsUniform;
 use circle::{CIRCLE_INDICES, CIRCLE_VERTICES, CircleInstance};
 use rectangle::{RECT_INDICES, RECT_VERTICES, RectInstance};
 
+use iced::wgpu;
 use iced::wgpu::PipelineCompilationOptions;
 use iced::wgpu::util::DeviceExt;
-use iced::{Rectangle, wgpu};
 
 use rustc_hash::FxHashMap;
 
@@ -968,12 +968,10 @@ impl Pipeline {
         gpu.has_last_camera = true;
     }
 
-    pub fn begin_render_pass_ordered(
+    pub fn draw_ordered(
         &self,
         id: u64,
-        encoder: &mut wgpu::CommandEncoder,
-        target: &wgpu::TextureView,
-        viewport: Rectangle<u32>,
+        pass: &mut wgpu::RenderPass<'_>,
         rect_total_instances: u32,
         circle_total_instances: u32,
         draw_list: &[DrawItem],
@@ -981,33 +979,6 @@ impl Pipeline {
         let Some(gpu) = self.per_scene.get(&id) else {
             return;
         };
-
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("heatmap+rect+circle render pass"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target,
-                resolve_target: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
-                depth_slice: None,
-            })],
-            depth_stencil_attachment: None,
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-
-        pass.set_viewport(
-            viewport.x as f32,
-            viewport.y as f32,
-            viewport.width as f32,
-            viewport.height as f32,
-            0.0,
-            1.0,
-        );
-        pass.set_scissor_rect(viewport.x, viewport.y, viewport.width, viewport.height);
 
         pass.set_bind_group(bind::CAMERA_GROUP, &gpu.camera_bind_group, &[]);
 
@@ -1065,6 +1036,25 @@ impl Pipeline {
                     pass.draw_indexed(0..self.circle_num_indices, 0, 0..count);
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod shader_tests {
+    use super::{CIRCLE_SHADER_SRC, HEATMAP_SHADER_SRC, RECT_SHADER_SRC};
+    use iced::wgpu::naga::{
+        front::wgsl,
+        valid::{Capabilities, ValidationFlags, Validator},
+    };
+
+    #[test]
+    fn heatmap_shader_modules_validate() {
+        for source in [RECT_SHADER_SRC, CIRCLE_SHADER_SRC, HEATMAP_SHADER_SRC] {
+            let module = wgsl::parse_str(source).expect("valid heatmap WGSL");
+            Validator::new(ValidationFlags::all(), Capabilities::empty())
+                .validate(&module)
+                .expect("valid heatmap shader module");
         }
     }
 }

@@ -49,18 +49,12 @@ pub struct NetworkEditor {
     quantwheel: QuantWheelForm,
     confirm: ConfirmState,
     error: Option<String>,
-    /// Snapshot of the effective config when the editor was opened or last
-    /// reset. Used to revert drafts when the user cancels a restart confirmation.
-    effective: data::Network,
-    /// The full network config that was applied (proxy or server) but needs
-    /// a restart to take effect. `None` when no pending restart is needed.
-    pending_apply: Option<data::Network>,
 }
 
 impl NetworkEditor {
     /// Create a new `NetworkEditor` with form fields pre-populated from
-    /// the caller's effective network config.
-    pub fn new(network: &data::Network, pending_apply: Option<data::Network>) -> Self {
+    /// the caller's saved network settings.
+    pub fn new(network: &data::Network) -> Self {
         let mut proxy = ProxyForm::new();
         proxy.populate_from(network.proxy.as_ref());
         Self {
@@ -73,66 +67,38 @@ impl NetworkEditor {
             quantwheel: QuantWheelForm::new(network.quantwheel_session_cookie.is_some()),
             confirm: ConfirmState::Idle,
             error: None,
-            effective: network.clone(),
-            pending_apply,
         }
     }
 
-    pub fn update(&mut self, message: Message) -> Option<Action> {
+    pub fn update(&mut self, message: Message, network: &data::Network) -> Option<Action> {
         match message {
             Message::GoBack => {
                 self.confirm = ConfirmState::Idle;
                 Some(Action::Exit)
             }
-            Message::Proxy(msg) => {
-                let action = self.proxy.update(
-                    msg,
-                    &mut self.confirm,
-                    &mut self.error,
-                    self.effective.proxy.as_ref(),
-                );
-                if let Some(Action::ApplyProxy(ref cfg)) = action {
-                    self.pending_apply = Some(data::Network {
-                        proxy: cfg.clone(),
-                        ..self.effective.clone()
-                    });
-                }
-                action
-            }
-            Message::Fetch(msg) => {
-                let action = self.fetch.update(
-                    msg,
-                    &mut self.confirm,
-                    &mut self.error,
-                    &self.effective.trade_fetch_mode,
-                    self.effective.server_url.as_deref(),
-                    self.effective.server_auth_token.as_deref(),
-                );
-                if let Some(Action::ApplyServerConfig {
-                    mode,
-                    url,
-                    auth_token,
-                }) = &action
-                {
-                    self.pending_apply = Some(data::Network {
-                        trade_fetch_mode: mode.clone(),
-                        server_url: url.clone(),
-                        server_auth_token: auth_token.clone(),
-                        ..self.effective.clone()
-                    });
-                }
-                action
-            }
+            Message::Proxy(msg) => self.proxy.update(
+                msg,
+                &mut self.confirm,
+                &mut self.error,
+                network.proxy.as_ref(),
+            ),
+            Message::Fetch(msg) => self.fetch.update(
+                msg,
+                &mut self.confirm,
+                &mut self.error,
+                &network.trade_fetch_mode,
+                network.server_url.as_deref(),
+                network.server_auth_token.as_deref(),
+            ),
             Message::QuantWheel(msg) => self.quantwheel.update(msg, &mut self.error),
         }
     }
 
-    /// Borrow the pending config that needs a restart to take effect, if any.
-    pub fn pending_apply(&self) -> Option<&data::Network> {
-        self.pending_apply.as_ref()
-    }
-
-    pub fn view<'a>(&'a self, network: &'a data::Network) -> Element<'a, Message> {
+    pub fn view<'a>(
+        &'a self,
+        network: &'a data::Network,
+        restart_required: bool,
+    ) -> Element<'a, Message> {
         let modal_header = row![
             button(style::icon_text(style::Icon::Return, 11)).on_press(Message::GoBack),
             iced::widget::space::horizontal(),
@@ -161,7 +127,7 @@ impl NetworkEditor {
         ]
         .spacing(12);
 
-        if self.pending_apply.is_some() {
+        if restart_required {
             let banner = container(
                 text("Restart required.\nChanges will take effect after restart")
                     .size(crate::style::text_size::SMALL)
@@ -484,7 +450,7 @@ impl ProxyForm {
 
             let mut lines = column![
                 row![
-                    text("Effective:").size(crate::style::text_size::SMALL),
+                    text("Saved:").size(crate::style::text_size::SMALL),
                     text(effective).size(crate::style::text_size::BODY),
                 ]
                 .spacing(4)

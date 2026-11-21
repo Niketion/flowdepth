@@ -15,6 +15,12 @@ pub enum ResolvedStream {
     },
     /// Streams that are active and ready to use, but can't persist
     Ready(Vec<StreamKind>),
+    /// A tape with an active primary and secondary tickers awaiting metadata.
+    PartiallyReady {
+        ready: Vec<StreamKind>,
+        configured: Vec<PersistStreamKind>,
+        last_attempt: Option<Instant>,
+    },
     Blocked {
         streams: Vec<PersistStreamKind>,
         reason: String,
@@ -39,6 +45,11 @@ impl ResolvedStream {
             } => (streams, last_attempt),
             ResolvedStream::Blocked {
                 streams,
+                last_attempt,
+                ..
+            }
+            | ResolvedStream::PartiallyReady {
+                configured: streams,
                 last_attempt,
                 ..
             } => (streams, last_attempt),
@@ -77,22 +88,28 @@ impl ResolvedStream {
     }
 
     pub fn matches_stream(&self, stream: &StreamKind) -> bool {
-        match self {
-            ResolvedStream::Ready(existing) => existing.iter().any(|s| s == stream),
-            _ => false,
-        }
+        self.ready_iter().is_some_and(|mut existing| {
+            existing.any(|candidate| {
+                match (candidate.as_trade_stream(), stream.as_trade_stream()) {
+                    (Some(a), Some(b)) => a.ticker == b.ticker,
+                    _ => candidate == stream,
+                }
+            })
+        })
     }
 
     pub fn ready_iter_mut(&mut self) -> Option<impl Iterator<Item = &mut StreamKind>> {
         match self {
-            ResolvedStream::Ready(streams) => Some(streams.iter_mut()),
+            ResolvedStream::Ready(streams)
+            | ResolvedStream::PartiallyReady { ready: streams, .. } => Some(streams.iter_mut()),
             _ => None,
         }
     }
 
     pub fn ready_iter(&self) -> Option<impl Iterator<Item = &StreamKind>> {
         match self {
-            ResolvedStream::Ready(streams) => Some(streams.iter()),
+            ResolvedStream::Ready(streams)
+            | ResolvedStream::PartiallyReady { ready: streams, .. } => Some(streams.iter()),
             _ => None,
         }
     }
@@ -101,10 +118,7 @@ impl ResolvedStream {
     where
         F: FnMut(&StreamKind) -> Option<T>,
     {
-        match self {
-            ResolvedStream::Ready(streams) => streams.iter().find_map(f),
-            _ => None,
-        }
+        self.ready_iter()?.find_map(f)
     }
 
     pub fn into_waiting(self) -> Vec<PersistStreamKind> {
@@ -114,6 +128,33 @@ impl ResolvedStream {
                 streams.into_iter().map(PersistStreamKind::from).collect()
             }
             ResolvedStream::Blocked { streams, .. } => streams,
+            ResolvedStream::PartiallyReady { configured, .. } => configured,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use exchange::{Ticker, TickerInfo, adapter::Exchange};
+
+    #[test]
+    fn trade_routing_matches_market_across_metadata_versions() {
+        let ticker = Ticker::new("BTCUSDT", Exchange::BinanceLinear);
+        let original = TickerInfo::new(ticker, 0.01, 0.001, None);
+        let updated = TickerInfo::new(ticker, 0.1, 0.001, None);
+        let other = TickerInfo::new(
+            Ticker::new("BTCUSDT", Exchange::BybitLinear),
+            0.1,
+            0.001,
+            None,
+        );
+        let selected = ResolvedStream::Ready(vec![StreamKind::Trades {
+            ticker_info: original,
+        }]);
+        assert!(selected.matches_stream(&StreamKind::Trades {
+            ticker_info: updated
+        }));
+        assert!(!selected.matches_stream(&StreamKind::Trades { ticker_info: other }));
     }
 }

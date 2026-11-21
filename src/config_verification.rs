@@ -141,7 +141,7 @@ fn prime_charts(dashboard: &mut crate::screen::dashboard::Dashboard) {
             ResolvedStream::Waiting { streams, .. } | ResolvedStream::Blocked { streams, .. } => {
                 streams.clone()
             }
-            ResolvedStream::Ready(_) => continue,
+            ResolvedStream::Ready(_) | ResolvedStream::PartiallyReady { .. } => continue,
         };
         let ticker = persisted.first().map(|stream| match stream {
             PersistStreamKind::Kline { ticker, .. } | PersistStreamKind::Trades { ticker } => {

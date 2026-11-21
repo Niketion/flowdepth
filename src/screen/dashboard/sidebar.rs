@@ -349,6 +349,10 @@ impl Sidebar {
         self.tickers_table.metadata.tickers()
     }
 
+    pub fn ticker_info(&self, ticker: &exchange::Ticker) -> Option<exchange::TickerInfo> {
+        self.tickers_info().get(ticker).copied().flatten()
+    }
+
     pub fn cache_enabled(&self) -> bool {
         self.tickers_table.metadata.cache_enabled()
     }

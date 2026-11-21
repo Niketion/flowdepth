@@ -8,7 +8,8 @@ mod ws;
 use super::Timeframe;
 pub use super::error::{AdapterError, FetchError};
 use crate::{
-    Kline, Price, PushFrequency, TickMultiplier, TickerInfo, Trade, UnixMs, depth::Depth, unit::Qty,
+    Kline, Price, PushFrequency, TickMultiplier, Ticker, TickerInfo, Trade, UnixMs, depth::Depth,
+    unit::Qty,
 };
 
 use enum_map::{Enum, EnumMap};
@@ -177,7 +178,7 @@ impl UniqueStreams {
 
     fn update_specs_for_exchange(&mut self, exchange: Exchange) {
         let depth_streams = self.depth_streams(Some(exchange));
-        let trade_streams = self.trade_streams(Some(exchange));
+        let trade_streams = self.streams(Some(exchange), |_, stream| stream.as_trade_stream());
         let kline_streams = self.kline_streams(Some(exchange));
 
         self.specs[exchange] = Some(StreamSpecs {
@@ -227,8 +228,18 @@ impl UniqueStreams {
         self.streams(exchange_filter, |_, stream| stream.as_kline_stream())
     }
 
-    pub fn trade_streams(&self, exchange_filter: Option<Exchange>) -> Vec<TickerInfo> {
-        self.streams(exchange_filter, |_, stream| stream.as_trade_stream())
+    pub fn trade_streams(
+        &self,
+        exchange_filter: Option<Exchange>,
+        metadata: impl Fn(&Ticker) -> Option<TickerInfo>,
+    ) -> Vec<TickerInfo> {
+        let mut streams = self
+            .combined_used()
+            .filter(|(exchange, _)| exchange_filter.is_none_or(|filter| *exchange == filter))
+            .flat_map(|(_, specs)| specs.trade_tickers(&metadata))
+            .collect::<Vec<_>>();
+        streams.sort_unstable();
+        streams
     }
 
     pub fn combined_used(&self) -> impl Iterator<Item = (Exchange, &StreamSpecs)> {
@@ -258,6 +269,40 @@ fn default_depth_aggr() -> StreamTicksize {
 #[cfg(test)]
 mod stream_order_tests {
     use super::*;
+
+    #[test]
+    fn ticker_metadata_does_not_duplicate_trade_subscriptions() {
+        let ticker = crate::Ticker::new("BTCUSDT", Exchange::BinanceLinear);
+        let original = TickerInfo::new(ticker, 0.01, 0.001, None);
+        let updated = TickerInfo::new(ticker, 0.1, 0.001, None);
+        let streams = [original, updated].map(|ticker_info| StreamKind::Trades { ticker_info });
+        for unique in [
+            UniqueStreams::from(streams.iter()),
+            UniqueStreams::from(streams.iter().rev()),
+        ] {
+            assert_eq!(unique.trade_streams(None, |_| None), [original]);
+        }
+    }
+
+    #[test]
+    fn trade_subscription_uses_current_contract_size_in_either_insertion_order() {
+        let ticker = Ticker::new("BTCUSD_PERP", Exchange::BinanceInverse);
+        let stale = TickerInfo::new(ticker, 0.1, 1.0, Some(10.0));
+        let current = TickerInfo::new(ticker, 0.1, 1.0, Some(100.0));
+        let streams = [stale, current].map(|ticker_info| StreamKind::Trades { ticker_info });
+        for unique in [
+            UniqueStreams::from(streams.iter()),
+            UniqueStreams::from(streams.iter().rev()),
+        ] {
+            assert!(unique.trade_streams(None, |_| None).is_empty());
+            assert_eq!(
+                unique.trade_streams(None, |requested| (*requested == ticker).then_some(current)),
+                [current]
+            );
+        }
+        let stale_only = UniqueStreams::from(streams[..1].iter());
+        assert_eq!(stale_only.trade_streams(None, |_| Some(current)), [current]);
+    }
 
     #[test]
     fn subscription_specs_are_stable_across_pane_order_and_duplicates() {
@@ -298,15 +343,15 @@ mod stream_order_tests {
                 reordered.depth_streams(filter)
             );
             assert_eq!(
-                original.trade_streams(filter),
-                reordered.trade_streams(filter)
+                original.trade_streams(filter, |_| None),
+                reordered.trade_streams(filter, |_| None)
             );
             assert_eq!(
                 original.kline_streams(filter),
                 reordered.kline_streams(filter)
             );
             assert!(original.depth_streams(filter).is_sorted());
-            assert!(original.trade_streams(filter).is_sorted());
+            assert!(original.trade_streams(filter, |_| None).is_sorted());
             assert!(original.kline_streams(filter).is_sorted());
         }
         for (exchange, specs) in original.combined_used() {
@@ -321,8 +366,29 @@ mod stream_order_tests {
 #[derive(Debug, Clone, Default)]
 pub struct StreamSpecs {
     pub depth: Vec<(TickerInfo, StreamTicksize, PushFrequency)>,
-    pub trade: Vec<TickerInfo>,
+    trade: Vec<TickerInfo>,
     pub kline: Vec<(TickerInfo, Timeframe)>,
+}
+
+impl StreamSpecs {
+    pub fn trade_tickers(
+        &self,
+        metadata: impl Fn(&Ticker) -> Option<TickerInfo>,
+    ) -> impl Iterator<Item = TickerInfo> {
+        self.trade
+            .chunk_by(|left, right| left.ticker == right.ticker)
+            .filter_map(move |snapshots| {
+                let first = snapshots.first()?;
+                metadata(&first.ticker).or_else(|| {
+                    // Without current metadata, conflicting contract sizes cannot
+                    // safely be used to normalize quantities for this market.
+                    snapshots
+                        .iter()
+                        .all(|info| info.contract_size == first.contract_size)
+                        .then_some(*first)
+                })
+            })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]

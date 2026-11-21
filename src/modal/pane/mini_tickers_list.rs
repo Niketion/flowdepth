@@ -77,7 +77,7 @@ impl MiniPanel {
     pub fn view<'a>(
         &'a self,
         table: &'a TickersTable,
-        selected_tickers: Option<&'a [TickerInfo]>,
+        selected_tickers: Option<Vec<TickerInfo>>,
         base_ticker: Option<TickerInfo>,
     ) -> Element<'a, Message> {
         iced::widget::responsive(move |bounds| {
@@ -89,7 +89,7 @@ impl MiniPanel {
                 Message::RowSelected,
                 Message::SearchChanged,
                 Message::Scrolled,
-                selected_tickers,
+                selected_tickers.as_deref(),
                 base_ticker,
                 self.underlying_filter,
                 self.supported_options_only,
