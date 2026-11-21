@@ -3,9 +3,7 @@ use super::{
     indicator, request_fetch, ticks::y::PriceInfoLabel,
 };
 use crate::chart::indicator::kline::KlineIndicatorImpl;
-use crate::connector::fetcher::{
-    self, FetchRange, ReqError, RequestHandler, is_trade_fetch_enabled,
-};
+use crate::connector::fetcher::{self, FetchRange, ReqError, RequestHandler};
 use crate::{modal::pane::settings::study, style};
 use data::aggr::ticks::TickAggr;
 use data::aggr::time::TimeSeries;
@@ -633,6 +631,8 @@ impl KlineChart {
             self.fetching_trades = (false, None);
         }
 
+        let trade_fetch_enabled =
+            fetcher::is_trade_fetch_enabled_for(self.chart.ticker_info.exchange());
         log::debug!(
             "CHART FetchMissingStart | kind={:?} basis={:?} datapoints={} raw_trades={} covered_trade_ranges={} fetching_trades={} bubbles_enabled={} bubbles_session={:?} trade_fetch_enabled={}",
             self.kind,
@@ -646,7 +646,7 @@ impl KlineChart {
             self.fetching_trades.0,
             self.indicator_enabled(KlineIndicator::VolumeBubbles),
             self.visual_config.volume_bubbles.session,
-            is_trade_fetch_enabled()
+            trade_fetch_enabled
         );
         match &self.data_source {
             PlotData::TimeBased(timeseries) => {
@@ -805,7 +805,7 @@ impl KlineChart {
 
                 // priority 2, trades
                 if matches!(self.kind, KlineChartKind::Footprint { .. }) {
-                    if !self.fetching_trades.0 && is_trade_fetch_enabled() {
+                    if !self.fetching_trades.0 && trade_fetch_enabled {
                         if let Some((fetch_from, fetch_to)) = timeseries
                             .suggest_trade_fetch_range(visible_earliest_ms, visible_latest_ms)
                         {
@@ -857,7 +857,7 @@ impl KlineChart {
                         } else {
                             log::debug!("CHART Footprint | action=skip reason=no_missing_trades");
                         }
-                    } else if !is_trade_fetch_enabled() {
+                    } else if !trade_fetch_enabled {
                         log::debug!("CHART Footprint | action=skip reason=trade_fetch_disabled");
                     } else {
                         log::debug!("CHART Footprint | action=skip reason=already_fetching");
@@ -931,7 +931,7 @@ impl KlineChart {
                 if matches!(self.kind, KlineChartKind::Candles)
                     && self.has_fixed_volume_profiles()
                     && !self.fetching_trades.0
-                    && is_trade_fetch_enabled()
+                    && trade_fetch_enabled
                 {
                     let historical_to = historical_trade_target_to(kline_latest, timeframe_ms, now);
                     let mut ranges = self
