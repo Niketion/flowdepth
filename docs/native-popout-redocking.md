@@ -1,6 +1,6 @@
 # Native popout redocking
 
-On Windows, drag a detached pane by its native title bar. A small marker appears when the pointer enters an eligible edge region of the main pane grid. Hold the pointer in the marker until it expands into a translucent placement preview, then release. The pane joins the corresponding edge of the grid.
+On Windows, drag a detached pane by the grip in its panel header or by the native title bar. A small marker appears when the pointer enters an eligible edge region of the main pane grid. Hold the pointer in the marker until it expands into a translucent placement preview, then release. The pane joins the corresponding edge of the grid.
 
 Release away from a preview to place the popup independently, or press Escape to cancel the gesture. The four activation regions are near the midpoints of the pane-grid edges. A split must have enough room for the incoming pane and the existing grid. Restore a maximized pane before docking into the grid. The **Merge** action is available on all supported desktop platforms, including Linux and macOS, which use it to return detached panes.
 

@@ -8,6 +8,17 @@ pub use iced::window::{Id, Position, Settings, close, open};
 #[cfg(target_os = "windows")]
 pub mod docking;
 
+pub fn drag_popout<M: Send + 'static>(id: Id) -> Task<M> {
+    #[cfg(target_os = "windows")]
+    {
+        docking::drag_popout(id)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        iced::window::drag(id)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Window {
     pub id: Id,

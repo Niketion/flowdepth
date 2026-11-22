@@ -25,7 +25,10 @@ use windows_sys::{
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
             HiDpi::GetDpiForWindow,
-            Input::KeyboardAndMouse::{IsWindowEnabled, VK_ESCAPE, VK_RETURN},
+            Input::KeyboardAndMouse::{
+                GetAsyncKeyState, GetCapture, IsWindowEnabled, ReleaseCapture, VK_ESCAPE,
+                VK_LBUTTON, VK_RBUTTON, VK_RETURN,
+            },
             Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::*,
         },
@@ -68,6 +71,42 @@ thread_local! {
 const SUBCLASS_ID: usize = 1;
 const ARM_TIMER: usize = 0x4644;
 const PREVIEW_CLASS: *const u16 = w!("FlowdepthDockPreview");
+
+pub fn drag_popout<M: Send + 'static>(id: window::Id) -> Task<M> {
+    window::run(id, |handle| {
+        let Some(popup) = hwnd(handle) else {
+            return;
+        };
+        unsafe {
+            let button = if GetSystemMetrics(SM_SWAPBUTTON) == 0 {
+                VK_LBUTTON
+            } else {
+                VK_RBUTTON
+            };
+            if GetAsyncKeyState(i32::from(button)) >= 0 {
+                return;
+            }
+            let Some(position) = cursor().and_then(caption_position) else {
+                return;
+            };
+            if GetCapture() == popup {
+                ReleaseCapture();
+            }
+            // Queue the same message as a press on the system caption. Its
+            // LPARAM contains two packed signed coordinates by value.
+            if PostMessageW(popup, WM_NCLBUTTONDOWN, HTCAPTION as usize, position) == 0 {
+                log::warn!("Could not start moving the popout window");
+            }
+        }
+    })
+    .discard()
+}
+
+fn caption_position(point: POINT) -> Option<LPARAM> {
+    let x = i16::try_from(point.x).ok()? as u16;
+    let y = i16::try_from(point.y).ok()? as u16;
+    Some((u32::from(x) | (u32::from(y) << 16)) as LPARAM)
+}
 
 pub fn register_main<M: Send + 'static>(id: window::Id) -> Task<M> {
     window::run(id, move |handle| {
@@ -559,6 +598,14 @@ unsafe extern "system" fn preview_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn docking_caption_position_packs_signed_screen_coordinates() {
+        let position = caption_position(POINT { x: -1920, y: -240 }).unwrap() as u32;
+        assert_eq!(position as u16 as i16, -1920);
+        assert_eq!((position >> 16) as u16 as i16, -240);
+        assert!(caption_position(POINT { x: 32768, y: 0 }).is_none());
+    }
 
     fn release(x: i32) -> MSG {
         MSG {
