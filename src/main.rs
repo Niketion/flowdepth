@@ -156,6 +156,8 @@ struct Flowsurface {
     closing_startup_window: Option<window::Id>,
     #[cfg(target_os = "windows")]
     closing_main_window: bool,
+    #[cfg(target_os = "windows")]
+    pending_docks: HashMap<window::Id, (uuid::Uuid, uuid::Uuid)>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -295,6 +297,10 @@ enum Message {
     WindowEvent(window::Event),
     #[cfg(target_os = "windows")]
     DockPopout(window::docking::ConfirmedDrop),
+    #[cfg(target_os = "windows")]
+    DockPeerOffer(window::docking::peer::Incoming),
+    #[cfg(target_os = "windows")]
+    DockPeerResult(window::Id, Result<bool, String>),
     ExitRequested(HashMap<window::Id, WindowSpec>),
     RestartRequested(Option<HashMap<window::Id, WindowSpec>>),
     SaveStateRequested(HashMap<window::Id, WindowSpec>),
@@ -472,6 +478,8 @@ impl Flowsurface {
             closing_startup_window: None,
             #[cfg(target_os = "windows")]
             closing_main_window: false,
+            #[cfg(target_os = "windows")]
+            pending_docks: HashMap::new(),
         };
 
         if let Some(err) = audio_init_err {
@@ -1024,17 +1032,105 @@ impl Flowsurface {
             },
             #[cfg(target_os = "windows")]
             Message::DockPopout(drop) => {
-                if !self.closing_main_window
-                    && self.windowing_mode.allows_native_popout()
-                    && drop.main == self.main_window.id
+                use window::docking::Destination;
+                if self.closing_main_window
+                    || !self.windowing_mode.allows_native_popout()
+                    || self.pending_docks.contains_key(&drop.popup)
                 {
-                    return self
-                        .active_dashboard_mut()
-                        .dock_popout(drop.main, drop.popup, drop.zone)
-                        .map(|event| Message::Dashboard {
-                            layout_id: None,
-                            event,
+                    return Task::none();
+                }
+                match drop.destination {
+                    Destination::Local(main) if main == self.main_window.id => {
+                        return self
+                            .active_dashboard_mut()
+                            .dock_popout(main, drop.popup, drop.zone)
+                            .map(|event| Message::Dashboard {
+                                layout_id: None,
+                                event,
+                            });
+                    }
+                    Destination::Local(_) => {}
+                    Destination::Peer(remote) => {
+                        let Some(layout) =
+                            self.layout_manager.active_layout_id().map(|id| id.unique)
+                        else {
+                            return Task::none();
+                        };
+                        let Some((pane_id, pane)) =
+                            self.active_dashboard().export_docking_pane(drop.popup)
+                        else {
+                            return Task::none();
+                        };
+                        self.pending_docks.insert(drop.popup, (layout, pane_id));
+                        return Task::perform(
+                            window::docking::peer::send(remote, drop.zone, pane),
+                            move |result| {
+                                Message::DockPeerResult(
+                                    drop.popup,
+                                    result.map_err(|error| error.to_string()),
+                                )
+                            },
+                        );
+                    }
+                }
+            }
+            #[cfg(target_os = "windows")]
+            Message::DockPeerOffer(incoming) => {
+                let Some(reply) = incoming.take_reply() else {
+                    return Task::none();
+                };
+                let offer = Arc::unwrap_or_clone(incoming.offer);
+                let layout_matches = self
+                    .layout_manager
+                    .active_layout_id()
+                    .is_some_and(|id| window::docking::peer::stamp(id.unique) == offer.layout);
+                let main = self.main_window.id;
+                let imported = if self.dock_receiver_active()
+                    && layout_matches
+                    && window::docking::accepts_peer(offer.layout)
+                {
+                    self.active_dashboard_mut()
+                        .import_docking_pane(main, offer.zone, offer.pane)
+                } else {
+                    None
+                };
+                if reply.send(imported.is_some()).is_err() && imported.is_some() {
+                    log::warn!("WINDOW DockPeerReceiptLost | side=destination");
+                }
+                if let Some(task) = imported {
+                    log::info!(
+                        "WINDOW DockPeerAccepted | side=destination zone={:?}",
+                        offer.zone
+                    );
+                    return task.map(|event| Message::Dashboard {
+                        layout_id: None,
+                        event,
+                    });
+                }
+            }
+            #[cfg(target_os = "windows")]
+            Message::DockPeerResult(window, result) => {
+                let Some((layout, pane)) = self.pending_docks.remove(&window) else {
+                    return Task::none();
+                };
+                if matches!(result, Ok(true)) {
+                    let main = self.main_window.id;
+                    if let Some(dashboard) = self.layout_manager.mut_dashboard(layout) {
+                        log::info!("WINDOW DockPeerAccepted | side=source");
+                        return dashboard.close_exported_pane(main, pane).map(move |event| {
+                            Message::Dashboard {
+                                layout_id: Some(layout),
+                                event,
+                            }
                         });
+                    }
+                } else {
+                    if let Err(error) = result {
+                        log::warn!("WINDOW DockPeerRejected | error={error}");
+                    }
+                    self.notifications.push(Toast::warn(
+                        "The other window could not merge this pane. The popout is still open.",
+                    ));
                 }
             }
             Message::ExitRequested(windows) => {
@@ -1112,6 +1208,12 @@ impl Flowsurface {
                 layout_id: id,
                 event: msg,
             } => {
+                #[cfg(target_os = "windows")]
+                if let dashboard::Message::Pane(window, dashboard::pane::Message::Merge(_)) = &msg
+                    && self.pending_docks.contains_key(window)
+                {
+                    return Task::none();
+                }
                 let Some(active_layout) = self.layout_manager.active_layout_id() else {
                     log::error!("No active layout to handle dashboard message");
                     return Task::none();
@@ -1964,20 +2066,19 @@ impl Flowsurface {
                     event: msg,
                 });
             #[cfg(target_os = "windows")]
-            let dashboard_view = if dashboard.popout.is_empty() {
+            let dashboard_view = if !self.windowing_mode.allows_native_popout() {
                 dashboard_view
             } else {
-                let minimum =
-                    if self.sidebar.active_menu().is_none() && self.confirm_dialog.is_none() {
-                        dashboard.docking_minimum()
-                    } else {
-                        None
-                    };
+                let minimum = self
+                    .dock_receiver_active()
+                    .then(|| dashboard.docking_minimum())
+                    .flatten();
                 iced::widget::Stack::new()
                     .push(dashboard_view)
                     .push(
                         iced::widget::canvas(window::docking::Measure {
                             id,
+                            layout: self.layout_manager.active_layout_id().map(|id| id.unique),
                             minimum,
                             zoom: f64::from(self.scale_factor(id)),
                         })
@@ -2275,7 +2376,22 @@ impl Flowsurface {
             tick,
             debug_terminal,
             hotkeys,
+            #[cfg(target_os = "windows")]
+            if self.windowing_mode.allows_native_popout() && !self.closing_main_window {
+                window::docking::peer::listen().map(Message::DockPeerOffer)
+            } else {
+                Subscription::none()
+            },
         ])
+    }
+
+    #[cfg(target_os = "windows")]
+    fn dock_receiver_active(&self) -> bool {
+        self.windowing_mode.allows_native_popout()
+            && !self.closing_main_window
+            && !self.startup_loading.is_active()
+            && self.sidebar.active_menu().is_none()
+            && self.confirm_dialog.is_none()
     }
 
     fn debug_window_label(&self, id: window::Id) -> &'static str {

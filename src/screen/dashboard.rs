@@ -1090,13 +1090,60 @@ impl Dashboard {
         source: window::Id,
         zone: crate::docking::Zone,
     ) -> Task<Message> {
-        let edge = match zone {
+        self.return_popout(main, source, PopoutPlacement::Edge(Self::dock_edge(zone)))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn dock_edge(zone: crate::docking::Zone) -> pane_grid::Edge {
+        match zone {
             crate::docking::Zone::Left => pane_grid::Edge::Left,
             crate::docking::Zone::Right => pane_grid::Edge::Right,
             crate::docking::Zone::Top => pane_grid::Edge::Top,
             crate::docking::Zone::Bottom => pane_grid::Edge::Bottom,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn export_docking_pane(&self, source: window::Id) -> Option<(uuid::Uuid, data::Pane)> {
+        let (popup, _) = self.popout.get(&source)?;
+        let (_, state) = popup.iter().next().filter(|_| popup.len() == 1)?;
+        Some((state.unique_id(), data::Pane::from(state)))
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn close_exported_pane(&mut self, main: window::Id, pane: uuid::Uuid) -> Task<Message> {
+        let source = self.popout.iter().find_map(|(&id, (popup, _))| {
+            (popup.len() == 1 && popup.iter().any(|(_, state)| state.unique_id() == pane))
+                .then_some(id)
+        });
+        let Some(source) = source else {
+            return Task::none();
         };
-        self.return_popout(main, source, PopoutPlacement::Edge(edge))
+        self.popout.remove(&source);
+        if self.focus.is_some_and(|(window, _)| window == source) {
+            self.focus = None;
+        }
+        self.refresh_streams(main).chain(window::close(source))
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn import_docking_pane(
+        &mut self,
+        main: window::Id,
+        zone: crate::docking::Zone,
+        saved: data::Pane,
+    ) -> Option<Task<Message>> {
+        if self.panes.maximized().is_some() || matches!(saved, data::Pane::Split { .. }) {
+            return None;
+        }
+        let Configuration::Pane(state) = crate::layout::configuration(saved) else {
+            return None;
+        };
+        let destination = Self::reserve_docking_slot(&mut self.panes, Some(Self::dock_edge(zone)))?;
+        *self.panes.get_mut(destination)? = state;
+        self.focus = Some((main, destination));
+        self.reconcile_gex_liquidity_references(main);
+        Some(self.refresh_streams(main))
     }
 
     #[cfg(target_os = "windows")]
@@ -1165,17 +1212,9 @@ impl Dashboard {
         };
         popup.get(source_pane)?;
 
-        let target = self.panes.iter().last().map(|(&pane, _)| pane)?;
-        let axis = match edge {
-            Some(pane_grid::Edge::Left | pane_grid::Edge::Right) => pane_grid::Axis::Vertical,
-            _ => pane_grid::Axis::Horizontal,
-        };
         // Reserve the destination before removing the original state. Moving a pane
         // to a grid edge uses iced's own root split operation.
-        let (destination, _) = self.panes.split(axis, target, pane::State::new())?;
-        if let Some(edge) = edge {
-            self.panes.move_to_edge(destination, edge);
-        }
+        let destination = Self::reserve_docking_slot(&mut self.panes, edge)?;
         let destination_state = self.panes.get_mut(destination)?;
         if popup.len() == 1 {
             *destination_state = popup
@@ -1190,6 +1229,22 @@ impl Dashboard {
             return None;
         }
         self.focus = Some((main, destination));
+        Some(destination)
+    }
+
+    fn reserve_docking_slot(
+        grid: &mut pane_grid::State<pane::State>,
+        edge: Option<pane_grid::Edge>,
+    ) -> Option<pane_grid::Pane> {
+        let target = grid.iter().last().map(|(&pane, _)| pane)?;
+        let axis = match edge {
+            Some(pane_grid::Edge::Left | pane_grid::Edge::Right) => pane_grid::Axis::Vertical,
+            _ => pane_grid::Axis::Horizontal,
+        };
+        let (destination, _) = grid.split(axis, target, pane::State::new())?;
+        if let Some(edge) = edge {
+            grid.move_to_edge(destination, edge);
+        }
         Some(destination)
     }
 

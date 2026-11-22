@@ -23,7 +23,7 @@ pub struct Rect {
 }
 
 impl Rect {
-    fn contains(self, Point(x, y): Point) -> bool {
+    pub fn contains(self, Point(x, y): Point) -> bool {
         x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height
     }
 }
@@ -105,6 +105,7 @@ fn to_screen(origin: Point, scale: f64, rect: Rect) -> Rect {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(target_os = "windows", derive(serde::Serialize, serde::Deserialize))]
 pub enum Zone {
     Left,
     Right,

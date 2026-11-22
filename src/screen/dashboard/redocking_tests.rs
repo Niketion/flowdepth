@@ -2,6 +2,41 @@ use super::*;
 use data::layout::pane::LinkGroup;
 use iced::widget::pane_grid::{Axis, Edge, Node};
 
+#[cfg(target_os = "windows")]
+#[test]
+fn docking_peer_import_keeps_source_until_receipt_and_preserves_configuration() {
+    let main = window::Id::unique();
+    let receiving_main = window::Id::unique();
+    let mut source = Dashboard::empty(uuid::Uuid::new_v4());
+    let mut destination = Dashboard::empty(uuid::Uuid::new_v4());
+    let mut pane = pane::State::new();
+    pane.link_group = Some(LinkGroup::C);
+    let unrelated = add_popout(&mut source, pane::State::new()).0;
+    let (popup, _) = add_popout(&mut source, pane);
+
+    let (pane_id, offer) = source.export_docking_pane(popup).unwrap();
+    assert!(
+        destination
+            .import_docking_pane(receiving_main, crate::docking::Zone::Right, offer)
+            .is_some()
+    );
+    assert!(source.popout.contains_key(&popup));
+    let (focused_window, focused_pane) = destination.focus.unwrap();
+    assert_eq!(focused_window, receiving_main);
+    assert_eq!(
+        destination.panes.get(focused_pane).unwrap().link_group,
+        Some(LinkGroup::C)
+    );
+    assert!(matches!(
+        destination.panes.layout(),
+        Node::Split { axis: Axis::Vertical, b, .. } if matches!(**b, Node::Pane(pane) if pane == focused_pane)
+    ));
+
+    let _close = source.close_exported_pane(main, pane_id);
+    assert!(!source.popout.contains_key(&popup));
+    assert!(source.popout.contains_key(&unrelated));
+}
+
 fn add_popout(dashboard: &mut Dashboard, state: pane::State) -> (window::Id, pane_grid::Pane) {
     let window = window::Id::unique();
     let (grid, pane) = pane_grid::State::new(state);

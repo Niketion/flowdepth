@@ -1,6 +1,8 @@
 //! Windows title-bar drag adapter. All HWNDs and gesture state stay on the
 //! iced event-loop thread. Only a confirmed drop crosses into app update.
 
+pub mod peer;
+
 use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
@@ -18,8 +20,9 @@ use windows_sys::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::Gdi::{
-            BeginPaint, ClientToScreen, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
-            FrameRect, InvalidateRect, PAINTSTRUCT, UpdateWindow,
+            BeginPaint, ClientToScreen, CreateSolidBrush, DT_CENTER, DT_SINGLELINE, DT_VCENTER,
+            DeleteObject, DrawTextW, EndPaint, FillRect, FrameRect, InvalidateRect, PAINTSTRUCT,
+            PtInRect, SetBkMode, SetTextColor, TRANSPARENT, UpdateWindow,
         },
         System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
         UI::{
@@ -38,9 +41,15 @@ use crate::docking::{Drag, Geometry, Point, Preview, Rect, Zone};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ConfirmedDrop {
-    pub main: window::Id,
+    pub destination: Destination,
     pub popup: window::Id,
     pub zone: Zone,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Destination {
+    Local(window::Id),
+    Peer(peer::Remote),
 }
 
 struct Popup {
@@ -52,6 +61,7 @@ struct Popup {
 #[derive(Clone, Copy)]
 struct Surface {
     id: window::Id,
+    layout: u32,
     bounds: Rect,
     minimum: Point,
     zoom: f64,
@@ -61,6 +71,7 @@ struct Surface {
 thread_local! {
     static MAIN: Cell<Option<(window::Id, HWND)>> = const { Cell::new(None) };
     static SURFACE: Cell<Option<Surface>> = const { Cell::new(None) };
+    static PUBLISHED: Cell<Option<peer::Advert>> = const { Cell::new(None) };
     static POPUPS: RefCell<HashMap<HWND, Popup>> = RefCell::new(HashMap::new());
     static ACTIVE: RefCell<Option<Gesture>> = const { RefCell::new(None) };
     static ACCENT: Cell<u32> = const { Cell::new(0) };
@@ -71,14 +82,46 @@ const PREVIEW_CLASS: *const u16 = w!("FlowdepthDockPreview");
 
 pub fn register_main<M: Send + 'static>(id: window::Id) -> Task<M> {
     window::run(id, move |handle| {
-        MAIN.set(hwnd(handle).map(|hwnd| (id, hwnd)))
+        let Some(hwnd) = hwnd(handle) else { return };
+        MAIN.set(Some((id, hwnd)));
+        if unsafe { SetWindowSubclass(hwnd, Some(main_proc), SUBCLASS_ID, 0) } == 0 {
+            log::warn!("WINDOW DockPeerUnavailable | reason=window_registration_failed");
+        }
     })
     .discard()
 }
 
 pub fn forget_main() {
+    if let Some((_, hwnd)) = MAIN.get()
+        && PUBLISHED.take().is_some()
+    {
+        peer::unpublish(hwnd);
+    }
     MAIN.set(None);
     SURFACE.set(None);
+}
+
+unsafe extern "system" fn main_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if message == WM_NCDESTROY {
+        if MAIN.get().is_some_and(|(_, main)| main == hwnd) {
+            forget_main();
+        }
+        unsafe { RemoveWindowSubclass(hwnd, Some(main_proc), SUBCLASS_ID) };
+    }
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+
+pub fn accepts_peer(layout: u32) -> bool {
+    SURFACE
+        .get()
+        .is_some_and(|surface| surface.layout == layout)
 }
 
 pub fn watch<M: Send + 'static>(
@@ -134,6 +177,7 @@ fn hwnd(handle: &dyn window::Window) -> Option<HWND> {
 /// coordinates. The Windows move loop can then use them without calling iced.
 pub struct Measure {
     pub id: window::Id,
+    pub layout: Option<uuid::Uuid>,
     pub minimum: Option<Point>,
     pub zoom: f64,
 }
@@ -149,20 +193,55 @@ impl<M> canvas::Program<M> for Measure {
         bounds: Rectangle,
         _cursor: iced::mouse::Cursor,
     ) -> Vec<canvas::Geometry> {
-        SURFACE.set(self.minimum.map(|minimum| Surface {
-            id: self.id,
-            bounds: Rect {
-                x: f64::from(bounds.x),
-                y: f64::from(bounds.y),
-                width: f64::from(bounds.width),
-                height: f64::from(bounds.height),
-            },
-            minimum,
-            zoom: self.zoom,
-            accent: theme.palette().primary.base.color,
-        }));
+        let surface = self
+            .minimum
+            .zip(self.layout)
+            .map(|(minimum, layout)| Surface {
+                id: self.id,
+                layout: peer::stamp(layout),
+                bounds: Rect {
+                    x: f64::from(bounds.x),
+                    y: f64::from(bounds.y),
+                    width: f64::from(bounds.width),
+                    height: f64::from(bounds.height),
+                },
+                minimum,
+                zoom: self.zoom,
+                accent: theme.palette().primary.base.color,
+            });
+        SURFACE.set(surface);
+        if let Some((_, hwnd)) = MAIN.get().filter(|(id, _)| *id == self.id) {
+            let advert = surface
+                .filter(|_| peer::available())
+                .map(|surface| peer::Advert {
+                    layout: surface.layout,
+                    bounds: surface.bounds,
+                    minimum: surface.minimum,
+                    zoom: surface.zoom,
+                    accent: rgb(surface.accent),
+                });
+            publish(hwnd, advert);
+        }
         Vec::new()
     }
+}
+
+fn publish(hwnd: HWND, advert: Option<peer::Advert>) {
+    let previous = PUBLISHED.get();
+    if previous == advert {
+        return;
+    }
+    if let Some(advert) = advert
+        && peer::publish(hwnd, advert)
+    {
+        PUBLISHED.set(Some(advert));
+        if previous.is_none() {
+            log::debug!("WINDOW DockPeerPublished | pid={}", std::process::id());
+        }
+        return;
+    }
+    peer::unpublish(hwnd);
+    PUBLISHED.set(None);
 }
 
 struct Gesture {
@@ -172,7 +251,8 @@ struct Gesture {
     start_origin: Point,
     button: u16,
     end: MoveEnd,
-    preview: Option<(PreviewWindow, Preview)>,
+    targets: Vec<HWND>,
+    preview: Option<(PreviewWindow, Destination, Preview)>,
     preview_failed: bool,
 }
 
@@ -240,6 +320,7 @@ impl Gesture {
             start_origin,
             button,
             end: MoveEnd::default(),
+            targets: receiving_windows(),
             preview: None,
             preview_failed: false,
         })
@@ -250,39 +331,39 @@ impl Gesture {
             return;
         }
         let sample = cursor().and_then(|position| {
-            let (_, geometry, accent) = target(self.popup, position)?;
-            Some((position, geometry, accent))
+            let (destination, geometry, accent) = target(&self.targets, self.popup, position)?;
+            Some((position, destination, geometry, accent))
         });
         let candidate = match sample {
-            Some((position, geometry, accent)) => self
+            Some((position, destination, geometry, accent)) => self
                 .drag
                 .update(point(position), Some(geometry))
-                .map(|preview| (preview, accent)),
+                .map(|preview| (destination, preview, accent)),
             None => {
                 self.drag.update(Point(0.0, 0.0), None);
                 None
             }
         };
 
-        let Some((preview, accent)) = candidate else {
+        let Some((destination, preview, accent)) = candidate else {
             self.preview = None;
             return;
         };
         if self
             .preview
             .as_ref()
-            .is_some_and(|(_, last)| *last == preview)
+            .is_some_and(|(_, receiver, last)| *receiver == destination && *last == preview)
         {
             return;
         }
         let window = self
             .preview
             .take()
-            .map(|(window, _)| window)
+            .map(|(window, _, _)| window)
             .or_else(|| PreviewWindow::open(self.popup));
         self.preview = window
             .filter(|window| window.show(preview, accent))
-            .map(|window| (window, preview));
+            .map(|window| (window, destination, preview));
         if self.preview.is_some() {
             log::debug!("WINDOW DockPreview | zone={:?}", preview.zone);
         } else {
@@ -298,7 +379,9 @@ impl Gesture {
 
     fn finish(self) {
         unsafe { UnhookWindowsHookEx(self.hook) };
-        let displayed = self.preview.map(|(_, preview)| preview);
+        let displayed = self
+            .preview
+            .map(|(_, receiver, preview)| (receiver, preview));
         let release = self.end.confirm(|| {
             // Some Windows move loops handle the mouse release without
             // delivering it to the thread hook. At WM_EXITSIZEMOVE, accept
@@ -318,20 +401,20 @@ impl Gesture {
             displayed.is_some(),
             release.is_some()
         );
-        let (Some(release), Some(displayed)) = (release, displayed) else {
+        let (Some(release), Some((shown_receiver, displayed))) = (release, displayed) else {
             return;
         };
-        let Some((main, geometry, _)) = target(self.popup, release) else {
+        let Some((destination, geometry, _)) = target(&self.targets, self.popup, release) else {
             return;
         };
         let Some(zone) = self.drag.release(point(release), Some(geometry)) else {
             return;
         };
-        if zone == displayed.zone {
+        if destination == shown_receiver && zone == displayed.zone {
             POPUPS.with_borrow(|popups| {
                 if let Some(popup) = popups.get(&self.popup) {
                     let drop = ConfirmedDrop {
-                        main,
+                        destination,
                         popup: popup.id,
                         zone,
                     };
@@ -438,49 +521,109 @@ fn point(position: POINT) -> Point {
     Point(f64::from(position.x), f64::from(position.y))
 }
 
-fn target(popup: HWND, pointer: POINT) -> Option<(window::Id, Geometry, Color)> {
-    let (id, main) = MAIN.get()?;
-    let surface = SURFACE.get().filter(|surface| surface.id == id)?;
+fn receiving_windows() -> Vec<HWND> {
+    unsafe extern "system" fn collect(hwnd: HWND, data: LPARAM) -> i32 {
+        // EnumWindows calls this synchronously with the live Vec below.
+        if unsafe { IsWindowVisible(hwnd) } != 0 {
+            unsafe { &mut *(data as *mut Vec<HWND>) }.push(hwnd);
+        }
+        1
+    }
+
+    let mut windows = Vec::new();
+    unsafe { EnumWindows(Some(collect), &mut windows as *mut Vec<HWND> as LPARAM) };
+    windows
+}
+
+fn target(windows: &[HWND], popup: HWND, pointer: POINT) -> Option<(Destination, Geometry, Color)> {
+    let under_pointer = unsafe {
+        if IsWindowVisible(popup) == 0 || IsZoomed(popup) != 0 || IsIconic(popup) != 0 {
+            return None;
+        }
+        GetAncestor(WindowFromPoint(pointer), GA_ROOT)
+    };
+    // The moving title bar is often the top hit. Find the window underneath
+    // it before deciding whether that window supports Merge.
+    let covered_by_popup =
+        under_pointer == popup || unsafe { GetWindow(under_pointer, GW_OWNER) } == popup;
+    let hwnd = if covered_by_popup {
+        windows.iter().copied().find(|&hwnd| {
+            if hwnd == popup {
+                return false;
+            }
+            let mut rect = RECT::default();
+            unsafe {
+                IsWindowVisible(hwnd) != 0
+                    && IsIconic(hwnd) == 0
+                    && (GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TRANSPARENT == 0)
+                    && GetWindowRect(hwnd, &mut rect) != 0
+                    && PtInRect(&rect, pointer) != 0
+            }
+        })?
+    } else {
+        under_pointer
+    };
+    let (destination, geometry, accent) = destination_geometry(hwnd)?;
+    geometry
+        .screen
+        .contains(point(pointer))
+        .then_some((destination, geometry, accent))
+}
+
+fn destination_geometry(hwnd: HWND) -> Option<(Destination, Geometry, Color)> {
+    let (destination, bounds, minimum, zoom, accent) =
+        if let Some((id, _)) = MAIN.get().filter(|&(_, main)| main == hwnd) {
+            let surface = SURFACE.get().filter(|surface| surface.id == id)?;
+            (
+                Destination::Local(id),
+                surface.bounds,
+                surface.minimum,
+                surface.zoom,
+                surface.accent,
+            )
+        } else {
+            let (remote, advert) = peer::read(hwnd)?;
+            let color = advert.accent;
+            let accent = Color::from_rgb8(color as u8, (color >> 8) as u8, (color >> 16) as u8);
+            (
+                Destination::Peer(remote),
+                advert.bounds,
+                advert.minimum,
+                advert.zoom,
+                accent,
+            )
+        };
+
     // winit marks its Windows event-loop thread per-monitor DPI aware.
     // ClientToScreen and the native message point therefore share screen pixels.
     unsafe {
-        if IsWindowVisible(popup) == 0
-            || IsZoomed(popup) != 0
-            || IsIconic(popup) != 0
-            || IsWindowVisible(main) == 0
-            || IsIconic(main) != 0
-            || IsWindowEnabled(main) == 0
-        {
+        if IsWindowVisible(hwnd) == 0 || IsIconic(hwnd) != 0 || IsWindowEnabled(hwnd) == 0 {
             return None;
         }
         let mut origin = POINT::default();
         let mut client = RECT::default();
-        let scale = f64::from(GetDpiForWindow(main)) / 96.0 * surface.zoom;
-        if ClientToScreen(main, &mut origin) == 0 || GetClientRect(main, &mut client) == 0 {
-            return None;
-        }
-        let under_pointer = GetAncestor(WindowFromPoint(pointer), GA_ROOT);
-        if under_pointer != main
-            && under_pointer != popup
-            && GetWindow(under_pointer, GW_OWNER) != popup
-        {
-            return None;
-        }
-
-        let bounds = surface.bounds;
-        if bounds.x + bounds.width > f64::from(client.right) / scale + 1.0
+        let scale = f64::from(GetDpiForWindow(hwnd)) / 96.0 * zoom;
+        if !scale.is_finite()
+            || scale <= 0.0
+            || ClientToScreen(hwnd, &mut origin) == 0
+            || GetClientRect(hwnd, &mut client) == 0
+            || bounds.x + bounds.width > f64::from(client.right) / scale + 1.0
             || bounds.y + bounds.height > f64::from(client.bottom) / scale + 1.0
         {
             return None;
         }
         Some((
-            id,
-            Geometry::from_client(point(origin), scale, bounds, surface.minimum),
-            surface.accent,
+            destination,
+            Geometry::from_client(point(origin), scale, bounds, minimum),
+            accent,
         ))
     }
 }
 
+fn rgb(accent: Color) -> u32 {
+    let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u32;
+    channel(accent.r) | channel(accent.g) << 8 | channel(accent.b) << 16
+}
 struct PreviewWindow(HWND);
 
 impl PreviewWindow {
@@ -518,15 +661,14 @@ impl PreviewWindow {
     }
 
     fn show(&self, preview: Preview, accent: Color) -> bool {
-        let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u32;
-        ACCENT.set(channel(accent.r) | channel(accent.g) << 8 | channel(accent.b) << 16);
+        ACCENT.set(rgb(accent));
         let rect = preview.placement;
         let x = rect.x.round() as i32;
         let y = rect.y.round() as i32;
         let width = (rect.x + rect.width).round() as i32 - x;
         let height = (rect.y + rect.height).round() as i32 - y;
         unsafe {
-            let visible = SetLayeredWindowAttributes(self.0, 0, 90, LWA_ALPHA) != 0
+            let visible = SetLayeredWindowAttributes(self.0, 0, 112, LWA_ALPHA) != 0
                 && SetWindowPos(
                     self.0,
                     HWND_TOP,
@@ -569,6 +711,24 @@ unsafe extern "system" fn preview_proc(
                 let border = CreateSolidBrush((color & 0xfefefe) >> 1 | 0x808080);
                 FillRect(dc, &rect, fill);
                 FrameRect(dc, &rect, border);
+                let mut label = RECT {
+                    left: rect.right / 2 - 58,
+                    top: rect.bottom / 2 - 18,
+                    right: rect.right / 2 + 58,
+                    bottom: rect.bottom / 2 + 18,
+                };
+                let background = CreateSolidBrush(0x202020);
+                FillRect(dc, &label, background);
+                SetBkMode(dc, TRANSPARENT as i32);
+                SetTextColor(dc, 0xffffff);
+                DrawTextW(
+                    dc,
+                    w!("Merge"),
+                    -1,
+                    &mut label,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+                );
+                DeleteObject(background);
                 DeleteObject(fill);
                 DeleteObject(border);
             }
