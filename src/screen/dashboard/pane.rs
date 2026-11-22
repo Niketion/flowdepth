@@ -105,7 +105,7 @@ pub enum Message {
     MaximizePane(pane_grid::Pane),
     Restore,
     Popout,
-    Merge,
+    Merge(pane_grid::Pane),
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
     VisualConfigChanged(pane_grid::Pane, VisualConfig, bool),
     PaneEvent(pane_grid::Pane, Event),
@@ -195,12 +195,10 @@ pub struct State {
 impl State {
     pub fn news_subscription(
         &self,
-        window: window::Id,
-        pane: pane_grid::Pane,
         proxy: Option<exchange::proxy::Proxy>,
     ) -> iced::Subscription<crate::chart::news::Message> {
         match &self.content {
-            Content::News(news) => news.subscription(self.id, window, pane, proxy),
+            Content::News(news) => news.subscription(self.id, proxy),
             _ => iced::Subscription::none(),
         }
     }
@@ -2568,7 +2566,7 @@ impl State {
         if is_popout && allow_native_popout {
             buttons = buttons.push(button_with_tooltip(
                 icon_text(Icon::Popout, 12),
-                Message::Merge,
+                Message::Merge(pane),
                 Some("Merge"),
                 tooltip_pos,
                 control_btn_style(is_popout),

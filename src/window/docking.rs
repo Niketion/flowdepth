@@ -1,0 +1,612 @@
+//! Windows title-bar drag adapter. All HWNDs and gesture state stay on the
+//! iced event-loop thread. Only a confirmed drop crosses into app update.
+
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    ptr::{null, null_mut},
+    sync::OnceLock,
+    time::Instant,
+};
+
+use iced::{
+    Color, Rectangle, Task, Theme,
+    futures::channel::mpsc,
+    widget::canvas,
+    window::{self, raw_window_handle::RawWindowHandle},
+};
+use windows_sys::{
+    Win32::{
+        Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+        Graphics::Gdi::{
+            BeginPaint, ClientToScreen, CreateSolidBrush, DeleteObject, EndPaint, FillRect,
+            FrameRect, InvalidateRect, PAINTSTRUCT,
+        },
+        System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentThreadId},
+        UI::{
+            HiDpi::GetDpiForWindow,
+            Input::KeyboardAndMouse::{IsWindowEnabled, VK_ESCAPE, VK_RETURN},
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
+            WindowsAndMessaging::*,
+        },
+    },
+    w,
+};
+
+use crate::docking::{ARM_DELAY, Drag, Geometry, Point, Preview, Rect, Zone};
+
+#[derive(Debug, Clone, Copy)]
+pub struct ConfirmedDrop {
+    pub main: window::Id,
+    pub popup: window::Id,
+    pub zone: Zone,
+}
+
+struct Popup {
+    id: window::Id,
+    eligible: bool,
+    events: mpsc::UnboundedSender<ConfirmedDrop>,
+}
+
+#[derive(Clone, Copy)]
+struct Surface {
+    id: window::Id,
+    bounds: Rect,
+    minimum: Point,
+    zoom: f64,
+    accent: Color,
+}
+
+thread_local! {
+    static MAIN: Cell<Option<(window::Id, HWND)>> = const { Cell::new(None) };
+    static SURFACE: Cell<Option<Surface>> = const { Cell::new(None) };
+    static POPUPS: RefCell<HashMap<HWND, Popup>> = RefCell::new(HashMap::new());
+    static ACTIVE: RefCell<Option<Gesture>> = const { RefCell::new(None) };
+    static ACCENT: Cell<u32> = const { Cell::new(0) };
+}
+
+const SUBCLASS_ID: usize = 1;
+const ARM_TIMER: usize = 0x4644;
+const PREVIEW_CLASS: *const u16 = w!("FlowdepthDockPreview");
+
+pub fn register_main<M: Send + 'static>(id: window::Id) -> Task<M> {
+    window::run(id, move |handle| {
+        MAIN.set(hwnd(handle).map(|hwnd| (id, hwnd)))
+    })
+    .discard()
+}
+
+pub fn forget_main() {
+    MAIN.set(None);
+    SURFACE.set(None);
+}
+
+pub fn watch<M: Send + 'static>(
+    id: window::Id,
+    eligible: bool,
+    map: fn(ConfirmedDrop) -> M,
+) -> Task<M> {
+    window::run(id, move |handle| {
+        let hwnd = hwnd(handle)?;
+        let (events, receiver) = mpsc::unbounded();
+        // iced runs this callback on the thread owning the HWND.
+        if unsafe { SetWindowSubclass(hwnd, Some(popup_proc), SUBCLASS_ID, 0) } == 0 {
+            log::warn!("Could not observe title-bar gestures for {id:?}");
+            return None;
+        }
+        POPUPS.with_borrow_mut(|popups| {
+            popups.insert(
+                hwnd,
+                Popup {
+                    id,
+                    eligible,
+                    events,
+                },
+            )
+        });
+        Some(receiver)
+    })
+    .then(move |receiver| receiver.map_or_else(Task::none, |events| Task::run(events, map)))
+}
+
+pub fn enable_popup<M: Send + 'static>(id: window::Id) -> Task<M> {
+    window::run(id, |handle| {
+        if let Some(hwnd) = hwnd(handle) {
+            POPUPS.with_borrow_mut(|popups| {
+                if let Some(popup) = popups.get_mut(&hwnd) {
+                    popup.eligible = true;
+                }
+            });
+        }
+    })
+    .discard()
+}
+
+fn hwnd(handle: &dyn window::Window) -> Option<HWND> {
+    match handle.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(handle) => Some(handle.hwnd.get() as HWND),
+        _ => None,
+    }
+}
+
+/// A transparent canvas records the actual pane-grid bounds in iced's client
+/// coordinates. The Windows move loop can then use them without calling iced.
+pub struct Measure {
+    pub id: window::Id,
+    pub minimum: Option<Point>,
+    pub zoom: f64,
+}
+
+impl<M> canvas::Program<M> for Measure {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        _renderer: &iced::Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        SURFACE.set(self.minimum.map(|minimum| Surface {
+            id: self.id,
+            bounds: Rect {
+                x: f64::from(bounds.x),
+                y: f64::from(bounds.y),
+                width: f64::from(bounds.width),
+                height: f64::from(bounds.height),
+            },
+            minimum,
+            zoom: self.zoom,
+            accent: theme.palette().primary.base.color,
+        }));
+        Vec::new()
+    }
+}
+
+struct Gesture {
+    popup: HWND,
+    hook: HHOOK,
+    drag: Drag,
+    started: Instant,
+    moving: bool,
+    exited: bool,
+    end: MoveEnd,
+    timer: bool,
+    preview: Option<(PreviewWindow, Preview)>,
+    preview_failed: bool,
+}
+
+#[derive(Default)]
+struct MoveEnd {
+    cancelled: bool,
+    released: Option<POINT>,
+}
+
+impl MoveEnd {
+    fn observe(&mut self, popup: HWND, message: &MSG) {
+        match message.message {
+            WM_KEYDOWN | WM_SYSKEYDOWN
+                if [VK_ESCAPE, VK_RETURN].contains(&(message.wParam as u16)) =>
+            {
+                self.cancelled = true;
+            }
+            WM_LBUTTONUP | WM_NCLBUTTONUP if message.hwnd == popup => {
+                self.released.get_or_insert(message.pt);
+            }
+            _ => {}
+        }
+    }
+
+    fn confirm(self, exited: bool) -> Option<POINT> {
+        (exited && !self.cancelled)
+            .then_some(self.released)
+            .flatten()
+    }
+}
+
+impl Gesture {
+    fn begin(popup: HWND) -> Option<Self> {
+        let start = cursor()?;
+        // The move loop consumes button-up and Escape before dispatching them
+        // to the popup. Observe removed messages on this GUI thread for the
+        // duration of this one caption press, forwarding every message.
+        let hook = unsafe {
+            SetWindowsHookExW(
+                WH_GETMESSAGE,
+                Some(move_messages),
+                null_mut(),
+                GetCurrentThreadId(),
+            )
+        };
+        if hook.is_null() {
+            log::warn!("Could not observe the native window move loop");
+            return None;
+        }
+        Some(Self {
+            popup,
+            hook,
+            drag: Drag::new(point(start)),
+            started: Instant::now(),
+            moving: false,
+            exited: false,
+            end: MoveEnd::default(),
+            timer: false,
+            preview: None,
+            preview_failed: false,
+        })
+    }
+
+    fn refresh(&mut self) {
+        if !self.moving || self.end.cancelled || self.end.released.is_some() || self.preview_failed
+        {
+            return;
+        }
+        let target = cursor().and_then(|position| {
+            let (_, geometry, accent) = target(self.popup, position)?;
+            Some((position, geometry, accent))
+        });
+        let candidate = match target {
+            Some((position, geometry, accent)) => self
+                .drag
+                .update(point(position), Some(geometry), self.started.elapsed())
+                .map(|preview| (preview, accent)),
+            None => {
+                self.drag
+                    .update(Point(0.0, 0.0), None, self.started.elapsed());
+                None
+            }
+        };
+
+        let Some((preview, accent)) = candidate else {
+            self.hide();
+            return;
+        };
+        if self
+            .preview
+            .as_ref()
+            .is_none_or(|(_, last)| *last != preview)
+        {
+            let window = self
+                .preview
+                .take()
+                .map(|(window, _)| window)
+                .or_else(|| PreviewWindow::open(self.popup));
+            self.preview = window
+                .filter(|window| window.show(preview, accent))
+                .map(|window| (window, preview));
+            if self.preview.is_none() {
+                log::warn!("Could not show the native docking preview");
+                self.preview_failed = true;
+                self.stop_timer();
+                return;
+            }
+        }
+        if preview.armed {
+            self.stop_timer();
+        } else if !self.timer {
+            self.timer =
+                unsafe { SetTimer(self.popup, ARM_TIMER, ARM_DELAY.as_millis() as u32, None) } != 0;
+        }
+    }
+
+    fn stop_timer(&mut self) {
+        if std::mem::take(&mut self.timer) {
+            unsafe { KillTimer(self.popup, ARM_TIMER) };
+        }
+    }
+
+    fn hide(&mut self) {
+        self.stop_timer();
+        self.preview = None;
+    }
+
+    fn finish(mut self) {
+        let displayed = self.preview.as_ref().map(|(_, preview)| *preview);
+        self.hide();
+        unsafe { UnhookWindowsHookEx(self.hook) };
+        let (Some(release), Some(displayed)) = (self.end.confirm(self.exited), displayed) else {
+            return;
+        };
+        let Some((main, geometry, _)) = target(self.popup, release) else {
+            return;
+        };
+        let Some(zone) = self
+            .drag
+            .release(point(release), Some(geometry), self.started.elapsed())
+        else {
+            return;
+        };
+        if displayed.armed && zone == displayed.zone {
+            POPUPS.with_borrow(|popups| {
+                if let Some(popup) = popups.get(&self.popup) {
+                    let _ = popup.events.unbounded_send(ConfirmedDrop {
+                        main,
+                        popup: popup.id,
+                        zone,
+                    });
+                }
+            });
+        }
+    }
+}
+
+unsafe extern "system" fn move_messages(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code == HC_ACTION as i32 && wparam == PM_REMOVE as usize {
+        // WH_GETMESSAGE provides a live MSG for the duration of this callback.
+        let message = unsafe { &*(lparam as *const MSG) };
+        ACTIVE.with_borrow_mut(|active| {
+            if let Some(gesture) = active.as_mut().filter(|g| g.moving && !g.exited) {
+                gesture.end.observe(gesture.popup, message);
+            }
+        });
+    }
+    unsafe { CallNextHookEx(null_mut(), code, wparam, lparam) }
+}
+
+unsafe extern "system" fn popup_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
+    if message == WM_NCLBUTTONDOWN
+        && wparam == HTCAPTION as usize
+        && POPUPS.with_borrow(|popups| popups.get(&hwnd).is_some_and(|popup| popup.eligible))
+        && ACTIVE.with_borrow(Option::is_none)
+        && let Some(gesture) = Gesture::begin(hwnd)
+    {
+        ACTIVE.replace(Some(gesture));
+        // DefWindowProc runs the modal gesture synchronously. Let it finish
+        // all move, resize, and snap handling before publishing a drop.
+        let result = unsafe { DefSubclassProc(hwnd, message, wparam, lparam) };
+        if let Some(gesture) = ACTIVE.take() {
+            gesture.finish();
+        }
+        return result;
+    }
+
+    // Don't hold a RefCell borrow across calls that can dispatch other messages.
+    let move_message = matches!(
+        message,
+        WM_MOVING
+            | WM_ENTERSIZEMOVE
+            | WM_EXITSIZEMOVE
+            | WM_CANCELMODE
+            | WM_CAPTURECHANGED
+            | WM_ACTIVATE
+            | WM_CLOSE
+            | WM_NCDESTROY
+    ) || (message == WM_TIMER && wparam == ARM_TIMER);
+    if move_message && let Some(mut gesture) = ACTIVE.take() {
+        if gesture.popup == hwnd {
+            match message {
+                WM_ENTERSIZEMOVE => gesture.moving = true,
+                WM_EXITSIZEMOVE => gesture.exited = true,
+                WM_MOVING => gesture.refresh(),
+                WM_TIMER if gesture.timer => gesture.refresh(),
+                WM_TIMER => {}
+                WM_CAPTURECHANGED if gesture.end.released.is_some() => {}
+                WM_ACTIVATE if wparam & 0xffff != WA_INACTIVE as usize => {}
+                _ => {
+                    gesture.end.cancelled = true;
+                    gesture.hide();
+                }
+            }
+        }
+        ACTIVE.replace(Some(gesture));
+    }
+    if message == WM_NCDESTROY {
+        POPUPS.with_borrow_mut(|popups| popups.remove(&hwnd));
+        unsafe { RemoveWindowSubclass(hwnd, Some(popup_proc), SUBCLASS_ID) };
+    }
+    unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
+}
+
+fn cursor() -> Option<POINT> {
+    let mut position = POINT::default();
+    (unsafe { GetCursorPos(&mut position) } != 0).then_some(position)
+}
+
+fn point(position: POINT) -> Point {
+    Point(f64::from(position.x), f64::from(position.y))
+}
+
+fn target(popup: HWND, pointer: POINT) -> Option<(window::Id, Geometry, Color)> {
+    let (id, main) = MAIN.get()?;
+    let surface = SURFACE.get().filter(|surface| surface.id == id)?;
+    // winit marks its Windows event-loop thread per-monitor DPI aware.
+    // ClientToScreen and the native message point therefore share screen pixels.
+    unsafe {
+        if IsWindowVisible(popup) == 0
+            || IsZoomed(popup) != 0
+            || IsIconic(popup) != 0
+            || IsWindowVisible(main) == 0
+            || IsIconic(main) != 0
+            || IsWindowEnabled(main) == 0
+        {
+            return None;
+        }
+        let mut origin = POINT::default();
+        let mut client = RECT::default();
+        let scale = f64::from(GetDpiForWindow(main)) / 96.0 * surface.zoom;
+        if ClientToScreen(main, &mut origin) == 0 || GetClientRect(main, &mut client) == 0 {
+            return None;
+        }
+        let under_pointer = GetAncestor(WindowFromPoint(pointer), GA_ROOT);
+        if under_pointer != main && under_pointer != popup {
+            return None;
+        }
+
+        let bounds = surface.bounds;
+        if bounds.x + bounds.width > f64::from(client.right) / scale + 1.0
+            || bounds.y + bounds.height > f64::from(client.bottom) / scale + 1.0
+        {
+            return None;
+        }
+        Some((
+            id,
+            Geometry::from_client(point(origin), scale, bounds, surface.minimum),
+            surface.accent,
+        ))
+    }
+}
+
+struct PreviewWindow(HWND);
+
+impl PreviewWindow {
+    fn open(owner: HWND) -> Option<Self> {
+        static REGISTERED: OnceLock<bool> = OnceLock::new();
+        let instance = unsafe { GetModuleHandleW(null()) };
+        if !REGISTERED.get_or_init(|| {
+            let class = WNDCLASSW {
+                lpfnWndProc: Some(preview_proc),
+                hInstance: instance,
+                lpszClassName: PREVIEW_CLASS,
+                ..Default::default()
+            };
+            unsafe { RegisterClassW(&class) != 0 }
+        }) {
+            return None;
+        }
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WS_EX_LAYERED | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT,
+                PREVIEW_CLASS,
+                null(),
+                WS_POPUP,
+                0,
+                0,
+                0,
+                0,
+                owner,
+                null_mut(),
+                instance,
+                null(),
+            )
+        };
+        (!hwnd.is_null()).then_some(Self(hwnd))
+    }
+
+    fn show(&self, preview: Preview, accent: Color) -> bool {
+        let channel = |value: f32| (value.clamp(0.0, 1.0) * 255.0).round() as u32;
+        ACCENT.set(channel(accent.r) | channel(accent.g) << 8 | channel(accent.b) << 16);
+        let rect = if preview.armed {
+            preview.placement
+        } else {
+            preview.activation
+        };
+        let x = rect.x.round() as i32;
+        let y = rect.y.round() as i32;
+        let width = (rect.x + rect.width).round() as i32 - x;
+        let height = (rect.y + rect.height).round() as i32 - y;
+        let alpha = if preview.armed { 90 } else { 125 };
+        unsafe {
+            let visible = SetLayeredWindowAttributes(self.0, 0, alpha, LWA_ALPHA) != 0
+                && SetWindowPos(
+                    self.0,
+                    HWND_TOP,
+                    x,
+                    y,
+                    width,
+                    height,
+                    SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
+                ) != 0;
+            if visible {
+                InvalidateRect(self.0, null(), 0);
+            }
+            visible
+        }
+    }
+}
+
+impl Drop for PreviewWindow {
+    fn drop(&mut self) {
+        unsafe { DestroyWindow(self.0) };
+    }
+}
+
+unsafe extern "system" fn preview_proc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_NCHITTEST => HTTRANSPARENT as LRESULT,
+        WM_PAINT => unsafe {
+            let mut paint = PAINTSTRUCT::default();
+            let dc = BeginPaint(hwnd, &mut paint);
+            let mut rect = RECT::default();
+            if !dc.is_null() && GetClientRect(hwnd, &mut rect) != 0 {
+                let color = ACCENT.get();
+                let fill = CreateSolidBrush(color);
+                let border = CreateSolidBrush((color & 0xfefefe) >> 1 | 0x808080);
+                FillRect(dc, &rect, fill);
+                FrameRect(dc, &rect, border);
+                DeleteObject(fill);
+                DeleteObject(border);
+            }
+            EndPaint(hwnd, &paint);
+            0
+        },
+        _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn release(x: i32) -> MSG {
+        MSG {
+            hwnd: std::ptr::dangling_mut(),
+            message: WM_LBUTTONUP,
+            pt: POINT { x, y: -100 },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn docking_requires_both_a_native_release_and_move_loop_exit() {
+        let mut end = MoveEnd::default();
+        assert!(MoveEnd::default().confirm(true).is_none());
+        let event = release(300);
+        end.observe(null_mut(), &event);
+        assert!(end.confirm(true).is_none());
+
+        let mut end = MoveEnd::default();
+        end.observe(event.hwnd, &event);
+        assert!(end.confirm(false).is_none());
+    }
+
+    #[test]
+    fn docking_uses_the_first_release_point() {
+        let mut end = MoveEnd::default();
+        let event = release(300);
+        end.observe(event.hwnd, &event);
+        end.observe(event.hwnd, &release(500));
+        let point = end.confirm(true).unwrap();
+        assert_eq!((point.x, point.y), (300, -100));
+    }
+
+    #[test]
+    fn docking_rejects_escape_and_keyboard_completion() {
+        for key in [VK_ESCAPE, VK_RETURN] {
+            let mut end = MoveEnd::default();
+            let event = release(300);
+            end.observe(
+                event.hwnd,
+                &MSG {
+                    message: WM_KEYDOWN,
+                    wParam: key.into(),
+                    ..Default::default()
+                },
+            );
+            end.observe(event.hwnd, &event);
+            assert!(end.confirm(true).is_none());
+        }
+    }
+}

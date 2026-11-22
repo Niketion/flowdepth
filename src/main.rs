@@ -6,6 +6,8 @@ mod chart;
 mod config_verification;
 mod connector;
 mod debug_terminal;
+#[cfg(any(target_os = "windows", test))]
+mod docking;
 mod indicators;
 mod layout;
 mod logger;
@@ -152,6 +154,8 @@ struct Flowsurface {
     startup_loading: StartupLoading,
     startup_main_window_target: StartupMainWindowTarget,
     closing_startup_window: Option<window::Id>,
+    #[cfg(target_os = "windows")]
+    closing_main_window: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -289,6 +293,8 @@ enum Message {
         ),
     ),
     WindowEvent(window::Event),
+    #[cfg(target_os = "windows")]
+    DockPopout(window::docking::ConfirmedDrop),
     ExitRequested(HashMap<window::Id, WindowSpec>),
     RestartRequested(Option<HashMap<window::Id, WindowSpec>>),
     SaveStateRequested(HashMap<window::Id, WindowSpec>),
@@ -464,6 +470,8 @@ impl Flowsurface {
             startup_loading: StartupLoading::new(),
             startup_main_window_target,
             closing_startup_window: None,
+            #[cfg(target_os = "windows")]
+            closing_main_window: false,
         };
 
         if let Some(err) = audio_init_err {
@@ -940,12 +948,26 @@ impl Flowsurface {
                 return Task::none();
             }
             Message::WindowEvent(event) => match event {
+                #[cfg(target_os = "windows")]
+                window::Event::Opened(id) => {
+                    if self.windowing_mode.allows_native_popout()
+                        && !self.closing_main_window
+                        && let Some((popup, _)) = self.active_dashboard().popout.get(&id)
+                    {
+                        return window::docking::watch(id, popup.len() == 1, Message::DockPopout);
+                    }
+                }
                 window::Event::CloseRequested(window) => {
                     if self.debug_terminal.on_window_closed(window) {
                         return window::close(window);
                     }
 
                     let main_window = self.main_window.id;
+                    #[cfg(target_os = "windows")]
+                    if window == main_window {
+                        self.closing_main_window = true;
+                        window::docking::forget_main();
+                    }
                     let startup_active = self.startup_loading.is_active();
                     if startup_active {
                         let windows = match self.startup_main_window_target.position {
@@ -966,6 +988,9 @@ impl Flowsurface {
 
                     if window != main_window {
                         dashboard.popout.remove(&window);
+                        if dashboard.focus.is_some_and(|(id, _)| id == window) {
+                            dashboard.focus = None;
+                        }
                         return window::close(window);
                     }
 
@@ -997,6 +1022,21 @@ impl Flowsurface {
                     }
                 }
             },
+            #[cfg(target_os = "windows")]
+            Message::DockPopout(drop) => {
+                if !self.closing_main_window
+                    && self.windowing_mode.allows_native_popout()
+                    && drop.main == self.main_window.id
+                {
+                    return self
+                        .active_dashboard_mut()
+                        .dock_popout(drop.main, drop.popup, drop.zone)
+                        .map(|event| Message::Dashboard {
+                            layout_id: None,
+                            event,
+                        });
+                }
+            }
             Message::ExitRequested(windows) => {
                 if self.save_state_enabled {
                     self.save_state_to_disk(&windows);
@@ -1923,6 +1963,29 @@ impl Flowsurface {
                     layout_id: None,
                     event: msg,
                 });
+            #[cfg(target_os = "windows")]
+            let dashboard_view = if dashboard.popout.is_empty() {
+                dashboard_view
+            } else {
+                let minimum =
+                    if self.sidebar.active_menu().is_none() && self.confirm_dialog.is_none() {
+                        dashboard.docking_minimum()
+                    } else {
+                        None
+                    };
+                iced::widget::Stack::new()
+                    .push(dashboard_view)
+                    .push(
+                        iced::widget::canvas(window::docking::Measure {
+                            id,
+                            minimum,
+                            zoom: f64::from(self.scale_factor(id)),
+                        })
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                    )
+                    .into()
+            };
 
             let header_title = {
                 #[cfg(target_os = "macos")]
@@ -2319,7 +2382,11 @@ impl Flowsurface {
         self.closing_startup_window = Some(old_window);
         self.main_window = window::Window::new(new_window);
 
-        Task::batch([window::close(old_window), open.then(|_| Task::none())])
+        #[cfg(target_os = "windows")]
+        let open = open.then(window::docking::register_main);
+        #[cfg(not(target_os = "windows"))]
+        let open = open.discard();
+        Task::batch([window::close(old_window), open])
     }
 
     fn view_with_modal<'a>(
