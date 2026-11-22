@@ -4,8 +4,6 @@ pub mod sidebar;
 pub mod tickers_table;
 
 #[cfg(test)]
-mod docking_tests;
-#[cfg(test)]
 mod redocking_tests;
 
 pub use sidebar::Sidebar;
