@@ -48,9 +48,7 @@ use exchange::{
 };
 use iced::{
     Alignment, Element, Length, Renderer, Theme, padding,
-    widget::{
-        button, center, column, container, mouse_area, pane_grid, responsive, row, text, tooltip,
-    },
+    widget::{button, center, column, container, pane_grid, responsive, row, text, tooltip},
 };
 use std::time::Instant;
 
@@ -107,7 +105,6 @@ pub enum Message {
     MaximizePane(pane_grid::Pane),
     Restore,
     Popout,
-    DragPopout,
     Merge(pane_grid::Pane),
     SwitchLinkGroup(pane_grid::Pane, Option<LinkGroup>),
     VisualConfigChanged(pane_grid::Pane, VisualConfig, bool),
@@ -1648,15 +1645,13 @@ impl State {
             );
         }
 
-        let title = top_left_buttons
-            .padding(padding::left(4))
-            .align_y(Alignment::Center)
-            .spacing(8)
-            .height(Length::Fixed(32.0));
-        let title_bar = pane_grid::TitleBar::new(Self::drag_title(
-            title,
-            window != main_window.id && allow_native_popout,
-        ))
+        let title_bar = pane_grid::TitleBar::new(
+            top_left_buttons
+                .padding(padding::left(4))
+                .align_y(Alignment::Center)
+                .spacing(8)
+                .height(Length::Fixed(32.0)),
+        )
         .controls(top_right_buttons)
         .style(style::pane_title_bar);
 
@@ -1691,11 +1686,7 @@ impl State {
                     })
                     .into()
             };
-            let title = Self::drag_title(
-                self.view_gex_header(id, size.width),
-                is_popout && allow_native_popout,
-            );
-            row![title, controls]
+            row![self.view_gex_header(id, size.width), controls]
                 .spacing(6)
                 .padding([0, 4])
                 .align_y(Alignment::Center)
@@ -1705,25 +1696,6 @@ impl State {
         .height(28)
         .width(Length::Fill)
         .into()
-    }
-
-    fn drag_title<'a>(
-        title: impl Into<Element<'a, Message>>,
-        enabled: bool,
-    ) -> Element<'a, Message> {
-        let title = title.into();
-        if enabled {
-            mouse_area(
-                row![icon_text(Icon::DragHandle, 14), title]
-                    .padding(padding::left(4))
-                    .align_y(Alignment::Center),
-            )
-            .on_press(Message::DragPopout)
-            .interaction(iced::mouse::Interaction::Grab)
-            .into()
-        } else {
-            title
-        }
     }
 
     fn view_gex_header(&self, id: pane_grid::Pane, width: f32) -> Element<'_, Message> {

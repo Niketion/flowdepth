@@ -877,11 +877,6 @@ impl Dashboard {
                 pane::Message::Popout => {
                     return (self.popout_pane(main_window, windowing_mode), None);
                 }
-                pane::Message::DragPopout => {
-                    if windowing_mode.allows_native_popout() && self.popout.contains_key(&window) {
-                        return (window::drag_popout(window), None);
-                    }
-                }
                 pane::Message::Merge(pane) => {
                     return (
                         self.return_popout(main_window.id, window, PopoutPlacement::Manual(pane)),

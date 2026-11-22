@@ -7,20 +7,14 @@
 use super::*;
 
 #[test]
-fn marker_and_placement_share_the_same_scaled_geometry() {
+fn docking_preview_is_immediate_at_a_scaled_edge() {
     let geometry = geometry(1.5);
     let pointer = target(geometry, Zone::Left);
     let mut drag = Drag::new(center(geometry));
-    let marker = drag
-        .update(pointer, Some(geometry), Duration::ZERO)
-        .unwrap();
-    assert!(!marker.armed);
-    assert!(marker.activation.contains(pointer));
-    assert_eq!(marker.activation.width, 2.0 * TARGET_DEPTH * 1.5);
-    let armed = drag.update(pointer, Some(geometry), ARM_DELAY).unwrap();
-    assert!(armed.armed);
-    assert_eq!(marker.activation, armed.activation);
-    assert!(armed.placement.contains(pointer));
+    let preview = drag.update(pointer, Some(geometry)).unwrap();
+
+    assert!(preview.placement.contains(pointer));
+    assert_eq!(drag.release(pointer, Some(geometry)), Some(Zone::Left));
 }
 
 #[test]
@@ -29,13 +23,11 @@ fn placement_leaves_room_for_the_existing_grid() {
     geometry.minimum.0 = geometry.screen.width - GRID_GAP - PANE_MIN;
     let pointer = target(geometry, Zone::Right);
     let mut drag = Drag::new(center(geometry));
-    let preview = drag
-        .update(pointer, Some(geometry), Duration::ZERO)
-        .unwrap();
+    let preview = drag.update(pointer, Some(geometry)).unwrap();
     assert_eq!(preview.placement.width, PANE_MIN);
 
     geometry.minimum.0 += 1.0;
-    assert!(drag.update(pointer, Some(geometry), ARM_DELAY).is_none());
+    assert!(drag.update(pointer, Some(geometry)).is_none());
 }
 
 #[test]
@@ -43,17 +35,13 @@ fn zero_sized_and_negative_main_bounds_clear_the_preview() {
     let geometry = geometry(1.0);
     let pointer = target(geometry, Zone::Left);
     let mut drag = Drag::new(center(geometry));
-    assert!(
-        drag.update(pointer, Some(geometry), Duration::ZERO)
-            .is_some()
-    );
+    assert!(drag.update(pointer, Some(geometry)).is_some());
     for width in [0.0, -1.0] {
         let mut invalid = geometry;
         invalid.screen.width = width;
-        assert!(drag.update(pointer, Some(invalid), ARM_DELAY).is_none());
+        assert!(drag.update(pointer, Some(invalid)).is_none());
     }
-    let fresh = drag.update(pointer, Some(geometry), ARM_DELAY).unwrap();
-    assert!(!fresh.armed);
+    assert!(drag.update(pointer, Some(geometry)).is_some());
 }
 
 const ORIGIN: Point = Point(0.0, 0.0);
@@ -165,90 +153,39 @@ fn invalid_scale_has_no_local_point() {
 }
 
 #[test]
-fn left_edge_arms_after_delay_and_release_confirms() {
+fn leaving_a_preview_before_releasing_keeps_the_window_detached() {
     let geometry = geometry(1.0);
-    let pointer = target(geometry, Zone::Left);
     let mut drag = Drag::new(center(geometry));
-
-    let preview = drag
-        .update(pointer, Some(geometry), Duration::ZERO)
-        .unwrap();
-    assert_eq!(preview.zone, Zone::Left);
-    assert!(!preview.armed);
-    assert_eq!(
-        preview.placement,
-        Rect {
-            x: 0.0,
-            y: 0.0,
-            width: 397.0,
-            height: 600.0,
-        }
-    );
-
-    assert!(
-        drag.update(pointer, Some(geometry), ARM_DELAY)
-            .unwrap()
-            .armed
-    );
-    assert_eq!(
-        drag.release(pointer, Some(geometry), ARM_DELAY),
-        Some(Zone::Left)
-    );
+    let pointer = target(geometry, Zone::Left);
+    assert!(drag.update(pointer, Some(geometry)).is_some());
+    assert_eq!(drag.release(center(geometry), Some(geometry)), None);
 }
 
 #[test]
-fn release_before_dwell_does_not_confirm() {
+fn release_cannot_confirm_a_different_edge_than_the_visible_preview() {
     let geometry = geometry(1.0);
-    let pointer = target(geometry, Zone::Left);
     let mut drag = Drag::new(center(geometry));
-    drag.update(pointer, Some(geometry), Duration::ZERO);
-    let too_early = ARM_DELAY - Duration::from_millis(1);
-    assert_eq!(drag.release(pointer, Some(geometry), too_early), None);
+    let left = target(geometry, Zone::Left);
+    let right = target(geometry, Zone::Right);
+    assert!(drag.update(left, Some(geometry)).is_some());
+    assert_eq!(drag.release(right, Some(geometry)), None);
 }
 
 #[test]
-fn requires_minimum_movement_before_candidating() {
+fn click_within_the_zone_does_not_dock() {
     let geometry = geometry(1.0);
-    let start = Point(EDGE_INSET, 300.0);
+    let start = target(geometry, Zone::Left);
     let mut drag = Drag::new(start);
-
-    // Eight pixels of travel is below the movement threshold: still no candidate.
-    assert_eq!(
-        drag.update(
-            Point(start.0 + 8.0, start.1),
-            Some(geometry),
-            Duration::ZERO
-        ),
-        None
-    );
-
-    // Crossing the threshold inside the left target arms the edge.
-    let pointer = Point(start.0 + MIN_MOVEMENT, start.1);
-    let preview = drag
-        .update(pointer, Some(geometry), Duration::ZERO)
-        .unwrap();
-    assert_eq!(preview.zone, Zone::Left);
-    assert!(!preview.armed);
-
-    assert!(
-        drag.update(pointer, Some(geometry), ARM_DELAY)
-            .unwrap()
-            .armed
-    );
-    assert_eq!(
-        drag.release(pointer, Some(geometry), ARM_DELAY),
-        Some(Zone::Left)
-    );
+    let pointer = Point(start.0 + 8.0, start.1);
+    assert!(drag.update(pointer, Some(geometry)).is_none());
+    assert_eq!(drag.release(pointer, Some(geometry)), None);
 }
 
 #[test]
 fn centre_of_window_is_not_a_target() {
     let geometry = geometry(1.0);
     let mut drag = Drag::new(center(geometry));
-    assert_eq!(
-        drag.update(Point(400.0, 200.0), Some(geometry), Duration::ZERO),
-        None
-    );
+    assert_eq!(drag.update(Point(400.0, 200.0), Some(geometry)), None);
 }
 
 #[test]
@@ -297,18 +234,13 @@ fn hysteresis_keeps_candidate_within_exit_margin() {
     let geometry = geometry(1.0);
     let mut drag = Drag::new(center(geometry));
     let pointer = target(geometry, Zone::Left);
-    drag.update(pointer, Some(geometry), Duration::ZERO);
-    drag.update(pointer, Some(geometry), ARM_DELAY);
+    drag.update(pointer, Some(geometry));
 
-    // Exactly on the outer edge of the hysteresis band (36 + 22 + 8 = 66).
+    // Exactly on the outer edge of the hysteresis band.
     let drift = Point(EDGE_INSET + TARGET_DEPTH + EXIT_MARGIN, 300.0);
-    let preview = drag.update(drift, Some(geometry), ARM_DELAY).unwrap();
+    let preview = drag.update(drift, Some(geometry)).unwrap();
     assert_eq!(preview.zone, Zone::Left);
-    assert!(preview.armed);
-    assert_eq!(
-        drag.release(drift, Some(geometry), ARM_DELAY),
-        Some(Zone::Left)
-    );
+    assert_eq!(drag.release(drift, Some(geometry)), Some(Zone::Left));
 }
 
 #[test]
@@ -316,86 +248,47 @@ fn leaving_edge_beyond_exit_margin_drops_candidate() {
     let geometry = geometry(1.0);
     let mut drag = Drag::new(center(geometry));
     let pointer = target(geometry, Zone::Left);
-    drag.update(pointer, Some(geometry), Duration::ZERO);
-    drag.update(pointer, Some(geometry), ARM_DELAY);
+    drag.update(pointer, Some(geometry));
 
     // One pixel past the hysteresis band: the candidate is gone.
     let away = Point(EDGE_INSET + TARGET_DEPTH + EXIT_MARGIN + 1.0, 300.0);
-    assert_eq!(drag.update(away, Some(geometry), ARM_DELAY), None);
-    assert_eq!(drag.release(away, Some(geometry), ARM_DELAY), None);
+    assert_eq!(drag.update(away, Some(geometry)), None);
+    assert_eq!(drag.release(away, Some(geometry)), None);
 }
 
 #[test]
-fn switching_edges_restarts_dwell() {
+fn switching_edges_updates_the_preview_and_release_target() {
     let geometry = geometry(1.0);
-    let mut drag = Drag::new(center(geometry));
     let left = target(geometry, Zone::Left);
-    drag.update(left, Some(geometry), Duration::ZERO);
-    drag.update(left, Some(geometry), ARM_DELAY);
-
     let right = target(geometry, Zone::Right);
-    let preview = drag.update(right, Some(geometry), ARM_DELAY).unwrap();
-    assert_eq!(preview.zone, Zone::Right);
-    assert!(!preview.armed, "switching edges must restart the dwell");
-
-    assert!(
-        drag.update(right, Some(geometry), ARM_DELAY + ARM_DELAY)
-            .unwrap()
-            .armed
-    );
+    let mut drag = Drag::new(center(geometry));
+    assert_eq!(drag.update(left, Some(geometry)).unwrap().zone, Zone::Left);
     assert_eq!(
-        drag.release(right, Some(geometry), ARM_DELAY + ARM_DELAY),
-        Some(Zone::Right)
+        drag.update(right, Some(geometry)).unwrap().zone,
+        Zone::Right
     );
+    assert_eq!(drag.release(right, Some(geometry)), Some(Zone::Right));
 }
 
 #[test]
-fn geometry_change_restarts_dwell() {
-    let geometry_1x = geometry(1.0);
-    let mut drag = Drag::new(center(geometry_1x));
-    let pointer_1x = target(geometry_1x, Zone::Left);
-    drag.update(pointer_1x, Some(geometry_1x), Duration::ZERO);
-    drag.update(pointer_1x, Some(geometry_1x), ARM_DELAY);
-    assert!(
-        drag.update(pointer_1x, Some(geometry_1x), ARM_DELAY)
-            .unwrap()
-            .armed
-    );
-
-    // A different geometry invalidates the candidate and restarts the dwell.
-    let geometry_2x = geometry(2.0);
-    let pointer_2x = target(geometry_2x, Zone::Left);
-    let preview = drag
-        .update(pointer_2x, Some(geometry_2x), ARM_DELAY)
-        .unwrap();
-    assert_eq!(preview.zone, Zone::Left);
-    assert!(!preview.armed);
+fn release_rejects_geometry_changed_since_the_preview() {
+    let before = geometry(1.0);
+    let mut after = before;
+    after.screen.x += 4.0;
+    let pointer = target(before, Zone::Left);
+    let mut drag = Drag::new(center(before));
+    assert!(drag.update(pointer, Some(before)).is_some());
+    assert_eq!(drag.release(pointer, Some(after)), None);
 }
 
 #[test]
 fn missing_geometry_cancels_the_candidate() {
     let geometry = geometry(1.0);
-    let mut drag = Drag::new(center(geometry));
     let pointer = target(geometry, Zone::Left);
-    drag.update(pointer, Some(geometry), Duration::ZERO);
-    drag.update(pointer, Some(geometry), ARM_DELAY);
-
-    // No geometry (the pointer left the window) clears the candidate.
-    let after_leave = ARM_DELAY + Duration::from_millis(1);
-    assert_eq!(drag.update(pointer, None, after_leave), None);
-
-    // Re-entering restarts the dwell rather than resuming the old one.
-    let reentry = ARM_DELAY + Duration::from_millis(2);
-    let preview = drag.update(pointer, Some(geometry), reentry).unwrap();
-    assert_eq!(preview.zone, Zone::Left);
-    assert!(!preview.armed);
-
-    let settled = ARM_DELAY + ARM_DELAY + Duration::from_millis(2);
-    assert!(drag.update(pointer, Some(geometry), settled).unwrap().armed);
-    assert_eq!(
-        drag.release(pointer, Some(geometry), settled),
-        Some(Zone::Left)
-    );
+    let mut drag = Drag::new(center(geometry));
+    assert!(drag.update(pointer, Some(geometry)).is_some());
+    assert_eq!(drag.update(pointer, None), None);
+    assert_eq!(drag.release(pointer, Some(geometry)), None);
 }
 
 #[test]
@@ -409,11 +302,7 @@ fn pointer_outside_window_has_no_candidate() {
         Point(400.0, 601.0),
     ] {
         let mut drag = Drag::new(start);
-        assert_eq!(
-            drag.update(pointer, Some(geometry), Duration::ZERO),
-            None,
-            "{pointer:?}"
-        );
+        assert_eq!(drag.update(pointer, Some(geometry)), None, "{pointer:?}");
     }
 }
 
@@ -434,15 +323,12 @@ fn panes_respect_minimum_window_size() {
     );
 
     let mut drag = Drag::new(center(narrow));
-    assert_eq!(
-        drag.update(Point(EDGE_INSET, 300.0), Some(narrow), Duration::ZERO),
-        None
-    );
+    assert_eq!(drag.update(Point(EDGE_INSET, 300.0), Some(narrow)), None);
 
     // Top/bottom still fit because the height is large enough.
     let mut drag = Drag::new(center(narrow));
     assert_eq!(
-        drag.update(Point(200.0, EDGE_INSET), Some(narrow), Duration::ZERO)
+        drag.update(Point(200.0, EDGE_INSET), Some(narrow))
             .map(|preview| preview.zone),
         Some(Zone::Top)
     );
@@ -465,12 +351,8 @@ fn negative_monitor_origin_works() {
     let pointer = target(geometry, Zone::Left);
     assert_eq!(pointer, Point(-1884.0, 110.0));
 
-    drag.update(pointer, Some(geometry), Duration::ZERO);
-    drag.update(pointer, Some(geometry), ARM_DELAY);
-    assert_eq!(
-        drag.release(pointer, Some(geometry), ARM_DELAY),
-        Some(Zone::Left)
-    );
+    drag.update(pointer, Some(geometry));
+    assert_eq!(drag.release(pointer, Some(geometry)), Some(Zone::Left));
 }
 
 #[test]
@@ -490,8 +372,8 @@ fn mixed_dpi_scales_targets_and_placement() {
     assert_eq!(pointer, Point(72.0, 600.0));
 
     let mut drag = Drag::new(center(geometry));
-    drag.update(pointer, Some(geometry), Duration::ZERO);
-    let preview = drag.update(pointer, Some(geometry), ARM_DELAY).unwrap();
+    drag.update(pointer, Some(geometry));
+    let preview = drag.update(pointer, Some(geometry)).unwrap();
     assert_eq!(preview.zone, Zone::Left);
     assert_eq!(
         preview.placement,
@@ -502,28 +384,22 @@ fn mixed_dpi_scales_targets_and_placement() {
             height: 1200.0,
         }
     );
-    assert_eq!(
-        drag.release(pointer, Some(geometry), ARM_DELAY),
-        Some(Zone::Left)
-    );
+    assert_eq!(drag.release(pointer, Some(geometry)), Some(Zone::Left));
 }
 
 #[test]
 fn same_physical_offset_differs_by_scale() {
-    // At 1x, 72px from the left is 72 logical: outside the 36±22 target.
+    // At 1x, 72px from the left is 72 logical: outside the target.
     let geometry_1x = geometry(1.0);
     let mut drag_1x = Drag::new(center(geometry_1x));
-    assert_eq!(
-        drag_1x.update(Point(72.0, 300.0), Some(geometry_1x), Duration::ZERO),
-        None
-    );
+    assert_eq!(drag_1x.update(Point(72.0, 300.0), Some(geometry_1x)), None);
 
     // At 2x the same 72px is 36 logical: inside the target.
     let geometry_2x = geometry(2.0);
     let mut drag_2x = Drag::new(center(geometry_2x));
     assert!(
         drag_2x
-            .update(Point(72.0, 600.0), Some(geometry_2x), Duration::ZERO)
+            .update(Point(72.0, 600.0), Some(geometry_2x))
             .is_some()
     );
 }
@@ -537,13 +413,9 @@ fn release_confirms_once_per_drag() {
     // `release` consumes the drag, so a second confirmation is a compile error;
     // a fresh drag is independent and can confirm on its own.
     let mut drag = Drag::new(start);
-    drag.update(pointer, Some(geometry), Duration::ZERO);
-    drag.update(pointer, Some(geometry), ARM_DELAY);
-    assert_eq!(
-        drag.release(pointer, Some(geometry), ARM_DELAY),
-        Some(Zone::Left)
-    );
+    drag.update(pointer, Some(geometry));
+    assert_eq!(drag.release(pointer, Some(geometry)), Some(Zone::Left));
 
     let fresh = Drag::new(start);
-    assert_eq!(fresh.release(pointer, Some(geometry), Duration::ZERO), None);
+    assert_eq!(fresh.release(pointer, Some(geometry)), None);
 }

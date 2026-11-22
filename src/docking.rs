@@ -1,15 +1,12 @@
 //! Geometry and intent for a single native title-bar drag.
 
-use std::time::Duration;
-
 #[cfg(test)]
 mod tests;
 
-pub const ARM_DELAY: Duration = Duration::from_millis(240);
 const MIN_MOVEMENT: f64 = 18.0;
 const EDGE_INSET: f64 = 36.0;
-const TARGET_DEPTH: f64 = 22.0;
-const TARGET_SPAN: f64 = 60.0;
+const TARGET_DEPTH: f64 = 30.0;
+const TARGET_SPAN: f64 = 104.0;
 const EXIT_MARGIN: f64 = 8.0;
 pub const GRID_GAP: f64 = 6.0;
 pub const PANE_MIN: f64 = 240.0;
@@ -164,14 +161,12 @@ impl Zone {
 pub struct Preview {
     pub zone: Zone,
     pub placement: Rect,
-    pub activation: Rect,
-    pub armed: bool,
 }
 
+#[derive(Clone, Copy)]
 struct Candidate {
     zone: Zone,
     geometry: Geometry,
-    since: Duration,
 }
 
 pub struct Drag {
@@ -189,12 +184,7 @@ impl Drag {
         }
     }
 
-    pub fn update(
-        &mut self,
-        pointer: Point,
-        geometry: Option<Geometry>,
-        elapsed: Duration,
-    ) -> Option<Preview> {
+    pub fn update(&mut self, pointer: Point, geometry: Option<Geometry>) -> Option<Preview> {
         let Some((geometry, area, local)) =
             geometry.and_then(|g| g.local(pointer).map(|(area, point)| (g, area, point)))
         else {
@@ -216,34 +206,20 @@ impl Drag {
             self.candidate = Zone::ALL
                 .into_iter()
                 .find(|zone| zone.contains(area, local, geometry.minimum, 0.0))
-                .map(|zone| Candidate {
-                    zone,
-                    geometry,
-                    since: elapsed,
-                });
+                .map(|zone| Candidate { zone, geometry });
         }
 
         self.candidate.as_ref().map(|candidate| Preview {
             zone: candidate.zone,
             placement: geometry.placement(candidate.zone),
-            activation: to_screen(
-                Point(geometry.screen.x, geometry.screen.y),
-                geometry.scale,
-                candidate.zone.band(area, 0.0),
-            ),
-            armed: elapsed.saturating_sub(candidate.since) >= ARM_DELAY,
         })
     }
 
-    /// Consuming the drag guarantees that its release can confirm at most once.
-    pub fn release(
-        mut self,
-        pointer: Point,
-        geometry: Option<Geometry>,
-        elapsed: Duration,
-    ) -> Option<Zone> {
-        self.update(pointer, geometry, elapsed)
-            .filter(|preview| preview.armed)
-            .map(|preview| preview.zone)
+    /// Confirm only the preview that was active before release.
+    pub fn release(mut self, pointer: Point, geometry: Option<Geometry>) -> Option<Zone> {
+        let candidate = self.candidate?;
+        let current = self.update(pointer, geometry)?;
+        (geometry == Some(candidate.geometry) && current.zone == candidate.zone)
+            .then_some(current.zone)
     }
 }
