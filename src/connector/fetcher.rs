@@ -1,6 +1,6 @@
 use super::persistent_cache::{MarketDataCache, market_cache, merge_bubble_summaries};
 use data::chart::kline::{BubbleVolumeSummary, VolumeBubbleConfig, cluster_volume_bubble_trades};
-use exchange::adapter::{AdapterError, AdapterHandles, Exchange, StreamKind};
+use exchange::adapter::{AdapterError, AdapterHandles, Exchange, StreamKind, Venue};
 use exchange::unit::PriceStep;
 use exchange::{Kline, OpenInterest, TickerInfo, Timeframe, Trade, UnixMs};
 use iced::{
@@ -182,8 +182,14 @@ pub fn trade_fetch_mode() -> TradeFetchMode {
         .unwrap_or(TradeFetchMode::Off)
 }
 
-pub fn is_trade_fetch_enabled() -> bool {
-    trade_fetch_mode() != TradeFetchMode::Off
+/// Binance historical trades are fetched automatically. Other exchanges use
+/// the user-configured trade fetch mode.
+pub fn is_trade_fetch_enabled_for(exchange: Exchange) -> bool {
+    trade_fetch_enabled_for_mode(exchange, &trade_fetch_mode())
+}
+
+fn trade_fetch_enabled_for_mode(exchange: Exchange, mode: &TradeFetchMode) -> bool {
+    exchange.venue() == Venue::Binance || *mode != TradeFetchMode::Off
 }
 
 pub fn supports_exchange_trade_fetch(exchange: Exchange) -> bool {
@@ -1382,10 +1388,14 @@ pub fn request_fetch(
             });
 
             if let Some((ticker_info, pane_id, stream)) = trade_info {
-                let supports_exchange_fetch = supports_exchange_trade_fetch(ticker_info.exchange());
+                let exchange = ticker_info.exchange();
+                let supports_exchange_fetch = supports_exchange_trade_fetch(exchange);
                 let mode = trade_fetch_mode();
 
-                if mode == TradeFetchMode::Server && server.is_none() {
+                if mode == TradeFetchMode::Server
+                    && server.is_none()
+                    && exchange.venue() != Venue::Binance
+                {
                     return Task::done(FetchUpdate::Error {
                         pane_id,
                         error: "Server mode selected but the server URL is invalid.".to_string(),
@@ -2769,6 +2779,26 @@ fn bubble_summaries_from_buckets(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binance_trade_fetch_ignores_off_mode_for_supported_markets() {
+        for exchange in [
+            Exchange::BinanceSpot,
+            Exchange::BinanceLinear,
+            Exchange::BinanceInverse,
+        ] {
+            assert!(trade_fetch_enabled_for_mode(exchange, &TradeFetchMode::Off));
+        }
+
+        assert!(!trade_fetch_enabled_for_mode(
+            Exchange::MexcLinear,
+            &TradeFetchMode::Off
+        ));
+        assert!(trade_fetch_enabled_for_mode(
+            Exchange::MexcLinear,
+            &TradeFetchMode::Exchange
+        ));
+    }
 
     fn ticker_info() -> TickerInfo {
         TickerInfo::new(

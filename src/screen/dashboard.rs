@@ -125,22 +125,6 @@ impl StartupLoadStatus {
     }
 }
 
-impl Default for Dashboard {
-    fn default() -> Self {
-        Self {
-            panes: pane_grid::State::with_configuration(Self::default_pane_config()),
-            focus: None,
-            streams: UniqueStreams::default(),
-            popout: HashMap::new(),
-            layout_id: uuid::Uuid::new_v4(),
-            last_live_t: HashMap::new(),
-            pending_backfills: HashMap::new(),
-            backfill_handles: Vec::new(),
-            pending_disconnect: None,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum Event {
     Notification(Toast),
@@ -560,36 +544,17 @@ impl Dashboard {
         }
     }
 
-    fn default_pane_config() -> Configuration<pane::State> {
-        Configuration::Split {
-            axis: pane_grid::Axis::Vertical,
-            ratio: 0.8,
-            a: Box::new(Configuration::Split {
-                axis: pane_grid::Axis::Horizontal,
-                ratio: 0.4,
-                a: Box::new(Configuration::Split {
-                    axis: pane_grid::Axis::Vertical,
-                    ratio: 0.5,
-                    a: Box::new(Configuration::Pane(pane::State::default())),
-                    b: Box::new(Configuration::Pane(pane::State::default())),
-                }),
-                b: Box::new(Configuration::Split {
-                    axis: pane_grid::Axis::Vertical,
-                    ratio: 0.5,
-                    a: Box::new(Configuration::Pane(pane::State::default())),
-                    b: Box::new(Configuration::Pane(pane::State::default())),
-                }),
-            }),
-            b: Box::new(Configuration::Pane(pane::State::default())),
-        }
-    }
-
     pub fn empty(layout_id: uuid::Uuid) -> Self {
         Self::from_config(
             Configuration::Pane(pane::State::new()),
             Vec::new(),
             layout_id,
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn layout_id(&self) -> uuid::Uuid {
+        self.layout_id
     }
 
     pub fn from_config(
@@ -2949,6 +2914,18 @@ impl Dashboard {
             if matches!(stream, StreamKind::Depth { .. }) {
                 log::info!(
                     "BACKFILL Decision | stream={} has_last_seen={} last_seen=- full_from=- full_to={} gap_ms=0 capped=false grouped_panes=0 registered_panes=0 reason=depth_not_supported",
+                    fetcher::format_stream(stream),
+                    self.last_live_t.contains_key(stream),
+                    fetcher::format_time_short(now)
+                );
+                continue;
+            }
+
+            if let StreamKind::Trades { ticker_info } = stream
+                && !fetcher::is_trade_fetch_enabled_for(ticker_info.exchange())
+            {
+                log::info!(
+                    "BACKFILL Decision | stream={} has_last_seen={} last_seen=- full_from=- full_to={} gap_ms=0 capped=false grouped_panes=0 registered_panes=0 reason=trade_fetch_disabled",
                     fetcher::format_stream(stream),
                     self.last_live_t.contains_key(stream),
                     fetcher::format_time_short(now)

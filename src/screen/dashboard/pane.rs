@@ -304,7 +304,7 @@ impl State {
         let Some(ticker_info) = self.stream_pair() else {
             return;
         };
-        if !fetcher::is_trade_fetch_enabled() {
+        if !fetcher::is_trade_fetch_enabled_for(ticker_info.exchange()) {
             log::warn!(
                 "DRAWING VolumeProfile | pane={} action=created reason=trade_fetch_disabled venue={} symbol={}",
                 fetcher::short_id(self.id),

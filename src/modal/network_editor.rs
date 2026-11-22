@@ -747,19 +747,19 @@ impl FetchForm {
         };
 
         let fetch_checkbox = checkbox(self.draft_active)
-            .label("Fetch trades")
+            .label("Fetch trades for other exchanges")
             .on_toggle(FetchMsg::ToggleFetchTrades);
 
         let mut fetch_section = column![tooltip(
             fetch_checkbox,
-            Some("Fetch historical trade data for footprint charts"),
+            Some("Binance historical trades are always fetched. This setting controls other supported exchanges."),
             iced::widget::tooltip::Position::Top,
         ),]
         .spacing(8);
 
         if self.draft_active {
             let exchange_radio = container(radio(
-                "Exchange (Binance only)",
+                "Exchange API",
                 FetchModeTag::Exchange,
                 selected_tag,
                 FetchMsg::SelectFetchMode,

@@ -78,7 +78,7 @@ impl LayoutManager {
         Self {
             layouts: vec![Layout {
                 id: default_layout.clone(),
-                dashboard: Dashboard::default(),
+                dashboard: Dashboard::empty(default_layout.unique),
             }],
             active_layout_id: Some(default_layout.unique),
             edit_mode: Editing::None,
@@ -674,6 +674,15 @@ fn template_svg(bytes: &'static [u8]) -> svg::Svg<'static> {
 mod market_layout_tests {
     use super::*;
     use exchange::{Ticker, TickerInfo, adapter::Exchange};
+
+    #[test]
+    fn new_layout_dashboard_uses_layout_id_and_starts_with_one_pane() {
+        let manager = LayoutManager::new();
+        let layout = &manager.layouts[0];
+
+        assert_eq!(layout.dashboard.layout_id(), layout.id.unique);
+        assert_eq!(layout.dashboard.panes.len(), 1);
+    }
 
     #[test]
     fn choosing_market_clones_active_layout_without_mutating_source() {
