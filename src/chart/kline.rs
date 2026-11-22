@@ -624,15 +624,13 @@ impl KlineChart {
         &self.kind
     }
 
-    fn fetch_missing_data(&mut self) -> Option<Action> {
+    fn fetch_missing_data(&mut self, trade_fetch_enabled: bool) -> Option<Action> {
         self.request_handler.cleanup_stale();
         if self.fetching_trades.0 && !self.request_handler.has_pending_trade_requests() {
             log::warn!("CHART Footprint | action=clear_fetching reason=no_pending_trade_request");
             self.fetching_trades = (false, None);
         }
 
-        let trade_fetch_enabled =
-            fetcher::is_trade_fetch_enabled_for(self.chart.ticker_info.exchange());
         log::debug!(
             "CHART FetchMissingStart | kind={:?} basis={:?} datapoints={} raw_trades={} covered_trade_ranges={} fetching_trades={} bubbles_enabled={} bubbles_session={:?} trade_fetch_enabled={}",
             self.kind,
@@ -872,6 +870,7 @@ impl KlineChart {
                 if matches!(self.kind, KlineChartKind::Candles)
                     && (svp_enabled || vwap_enabled)
                     && !self.fetching_trades.0
+                    && trade_fetch_enabled
                 {
                     let svp_cfg = self.visual_config.session_volume_profile;
                     let vwap_cfg = self.visual_config.vwap;
@@ -1019,11 +1018,13 @@ impl KlineChart {
                             cluster_window_ms: config.cluster_window_ms,
                             cluster_price_ticks: config.cluster_price_ticks,
                         };
-                        if let Some(action) = request_fetch(
-                            &mut self.request_handler,
-                            range,
-                            Some(&self.chart.ticker_info),
-                        ) {
+                        if trade_fetch_enabled
+                            && let Some(action) = request_fetch(
+                                &mut self.request_handler,
+                                range,
+                                Some(&self.chart.ticker_info),
+                            )
+                        {
                             return Some(action);
                         }
                     }
@@ -2423,7 +2424,9 @@ impl KlineChart {
 
         if let Some(t) = now {
             self.last_tick = t;
-            self.fetch_missing_data()
+            self.fetch_missing_data(fetcher::is_trade_fetch_enabled_for(
+                self.chart.ticker_info.exchange(),
+            ))
         } else {
             None
         }
@@ -7146,6 +7149,32 @@ mod tests {
         )
     }
 
+    fn candlestick_chart_with_recent_history(enabled_indicators: &[KlineIndicator]) -> KlineChart {
+        let mut chart = empty_candlestick_chart(enabled_indicators, None);
+        let timeframe_ms = exchange::Timeframe::M5.to_milliseconds();
+        let latest_candle = UnixMs::now().as_u64() / timeframe_ms * timeframe_ms - timeframe_ms;
+        let klines = (0..576)
+            .map(|index| {
+                Kline::new(
+                    latest_candle - (575 - index) * timeframe_ms,
+                    100.0,
+                    102.0,
+                    99.0,
+                    101.0,
+                    exchange::Volume::BuySell(Qty::from_f64(5.0), Qty::from_f64(2.0)),
+                    chart.chart.ticker_info.min_ticksize,
+                )
+            })
+            .collect::<Vec<_>>();
+        chart.insert_hist_klines(uuid::Uuid::new_v4(), &klines);
+        chart.chart.latest_x = latest_candle;
+        chart.chart.bounds = Rectangle::new(Point::ORIGIN, Size::new(800.0, 500.0));
+        chart.chart.cell_width = 10.0;
+        chart.chart.translation.x = chart.autoscaled_coords().x;
+        chart.invalidate(None);
+        chart
+    }
+
     #[test]
     fn cvd_input_changes_rebuild_immediately_without_waiting_for_a_live_trade() {
         let mut chart = empty_candlestick_chart(&[KlineIndicator::CumulativeDelta], None);
@@ -7191,6 +7220,42 @@ mod tests {
     fn volume_bubble_selection_is_aligned_when_chart_is_created() {
         let chart = empty_candlestick_chart(&[KlineIndicator::VolumeBubbles], None);
         assert!(chart.visual_config.volume_bubbles.enabled);
+    }
+
+    #[test]
+    fn candle_overlay_trade_backfill_respects_trade_fetch_setting() {
+        for indicator in [KlineIndicator::SessionVolumeProfile, KlineIndicator::Vwap] {
+            let mut disabled = candlestick_chart_with_recent_history(&[indicator]);
+            assert!(disabled.visible_timerange().is_some());
+            assert!(disabled.fetch_missing_data(false).is_none());
+
+            let mut enabled = candlestick_chart_with_recent_history(&[indicator]);
+            assert!(enabled.visible_timerange().is_some());
+            let Some(Action::RequestFetch(specs)) = enabled.fetch_missing_data(true) else {
+                panic!("{indicator:?} should request historical trades when fetching is enabled");
+            };
+            assert!(matches!(
+                specs.as_slice(),
+                [spec] if matches!(spec.fetch, FetchRange::Trades(..))
+            ));
+        }
+    }
+
+    #[test]
+    fn volume_bubble_summary_backfill_respects_trade_fetch_setting() {
+        let mut disabled = candlestick_chart_with_recent_history(&[KlineIndicator::VolumeBubbles]);
+        assert!(disabled.visible_timerange().is_some());
+        assert!(disabled.fetch_missing_data(false).is_none());
+
+        let mut enabled = candlestick_chart_with_recent_history(&[KlineIndicator::VolumeBubbles]);
+        assert!(enabled.visible_timerange().is_some());
+        let Some(Action::RequestFetch(specs)) = enabled.fetch_missing_data(true) else {
+            panic!("volume bubbles should request a summary when fetching is enabled");
+        };
+        assert!(matches!(
+            specs.as_slice(),
+            [spec] if matches!(spec.fetch, FetchRange::BubbleSummary { .. })
+        ));
     }
 
     #[test]

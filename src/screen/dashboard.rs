@@ -2921,6 +2921,18 @@ impl Dashboard {
                 continue;
             }
 
+            if let StreamKind::Trades { ticker_info } = stream
+                && !fetcher::is_trade_fetch_enabled_for(ticker_info.exchange())
+            {
+                log::info!(
+                    "BACKFILL Decision | stream={} has_last_seen={} last_seen=- full_from=- full_to={} gap_ms=0 capped=false grouped_panes=0 registered_panes=0 reason=trade_fetch_disabled",
+                    fetcher::format_stream(stream),
+                    self.last_live_t.contains_key(stream),
+                    fetcher::format_time_short(now)
+                );
+                continue;
+            }
+
             // Always use the timestamp captured at disconnect. A subset of WS
             // groups may reconnect and emit live events before the aggregate
             // connection is complete; using the current last_live_t here would
