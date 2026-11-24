@@ -1,6 +1,8 @@
-use super::*;
-use data::layout::pane::LinkGroup;
-use iced::widget::pane_grid::{Axis, Edge, Node};
+use super::{Dashboard, PopoutPlacement, pane};
+use crate::{chart, connector::ResolvedStream, window};
+use data::layout::{WindowSpec, pane::LinkGroup};
+use exchange::{TickerInfo, adapter::StreamKind};
+use iced::widget::pane_grid::{self, Axis, Edge, Node};
 
 #[cfg(target_os = "windows")]
 #[test]

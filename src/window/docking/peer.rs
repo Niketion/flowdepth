@@ -32,6 +32,7 @@ use crate::docking::{Point, Rect, Zone};
 const MAX_OFFER: usize = 8 * 1024 * 1024;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(4);
 const COOKIE: *const u16 = w!("Flowdepth.Dock.v1.Cookie");
+const PRECISE_ZOOM: *const u16 = w!("Flowdepth.Dock.v1.PreciseZoom");
 const FIELDS: [*const u16; 9] = [
     w!("Flowdepth.Dock.v1.Layout"),
     w!("Flowdepth.Dock.v1.X"),
@@ -104,6 +105,19 @@ fn fixed_decode(number: u32) -> f64 {
     f64::from(number - 1) / 64.0
 }
 
+fn zoom_encode(zoom: f64) -> u32 {
+    // The UI scale originates as f32. Preserve its bits in the window property.
+    (zoom as f32).to_bits()
+}
+
+fn zoom_decode(precise: u32, legacy: u32) -> f64 {
+    if precise == 0 {
+        fixed_decode(legacy)
+    } else {
+        f64::from(f32::from_bits(precise))
+    }
+}
+
 pub(super) fn publish(hwnd: HWND, advert: Advert) -> bool {
     let values = [
         advert.layout,
@@ -123,6 +137,11 @@ pub(super) fn publish(hwnd: HWND, advert: Advert) -> bool {
             .iter()
             .zip(values)
             .all(|(&key, value)| SetPropW(hwnd, key, value as usize as HANDLE) != 0)
+            && SetPropW(
+                hwnd,
+                PRECISE_ZOOM,
+                zoom_encode(advert.zoom) as usize as HANDLE,
+            ) != 0
             && SetPropW(hwnd, COOKIE, Endpoint::local().cookie as usize as HANDLE) != 0
     }
 }
@@ -130,6 +149,7 @@ pub(super) fn publish(hwnd: HWND, advert: Advert) -> bool {
 pub(super) fn unpublish(hwnd: HWND) {
     unsafe {
         RemovePropW(hwnd, COOKIE);
+        RemovePropW(hwnd, PRECISE_ZOOM);
         for field in FIELDS {
             RemovePropW(hwnd, field);
         }
@@ -142,6 +162,7 @@ pub(super) fn read(hwnd: HWND) -> Option<(Remote, Advert)> {
         return None;
     }
     let fields = FIELDS.map(|key| unsafe { GetPropW(hwnd, key) } as usize as u32);
+    let precise_zoom = unsafe { GetPropW(hwnd, PRECISE_ZOOM) } as usize as u32;
     let [
         layout,
         x,
@@ -176,7 +197,7 @@ pub(super) fn read(hwnd: HWND) -> Option<(Remote, Advert)> {
                 height: fixed_decode(height),
             },
             minimum: Point(fixed_decode(min_width), fixed_decode(min_height)),
-            zoom: fixed_decode(zoom),
+            zoom: zoom_decode(precise_zoom, zoom),
             accent: accent - 1,
         },
     ))
@@ -323,6 +344,21 @@ mod tests {
     use super::*;
 
     const CHILD_COOKIE: &str = "FLOWSURFACE_TEST_DOCK_PEER_COOKIE";
+
+    #[test]
+    fn docking_advert_preserves_fractional_zoom_and_accepts_legacy_properties() {
+        for zoom in [0.9_f32, 1.0, 1.1, 1.2] {
+            let zoom = f64::from(zoom);
+            let legacy = fixed_encode(zoom);
+            assert_eq!(zoom_decode(zoom_encode(zoom), legacy), zoom);
+            assert_eq!(zoom_decode(0, legacy), fixed_decode(legacy));
+        }
+        let zoom = f64::from(0.9_f32);
+        let legacy = fixed_encode(zoom);
+        let dashboard_right = fixed_decode(fixed_encode(1920.0 / zoom - 8.0));
+        assert!(dashboard_right > 1920.0 / zoom_decode(0, legacy) + 1.0);
+        assert!(dashboard_right <= 1920.0 / zoom_decode(zoom_encode(zoom), legacy) + 1.0);
+    }
 
     #[test]
     fn docking_pipe_child() {
