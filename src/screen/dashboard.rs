@@ -1105,25 +1105,57 @@ impl Dashboard {
 
     #[cfg(target_os = "windows")]
     pub fn export_docking_pane(&self, source: window::Id) -> Option<(uuid::Uuid, data::Pane)> {
-        let (popup, _) = self.popout.get(&source)?;
-        let (_, state) = popup.iter().next().filter(|_| popup.len() == 1)?;
+        let state = self.docking_pane(source)?;
         Some((state.unique_id(), data::Pane::from(state)))
     }
 
     #[cfg(target_os = "windows")]
-    pub fn close_exported_pane(&mut self, main: window::Id, pane: uuid::Uuid) -> Task<Message> {
-        let source = self.popout.iter().find_map(|(&id, (popup, _))| {
-            (popup.len() == 1 && popup.iter().any(|(_, state)| state.unique_id() == pane))
-                .then_some(id)
-        });
-        let Some(source) = source else {
-            return Task::none();
+    fn docking_pane(&self, source: window::Id) -> Option<&pane::State> {
+        let (popup, _) = self.popout.get(&source)?;
+        popup
+            .iter()
+            .next()
+            .filter(|_| popup.len() == 1)
+            .map(|(_, state)| state)
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn docking_pane_id(&self, source: window::Id) -> Option<uuid::Uuid> {
+        self.docking_pane(source).map(pane::State::unique_id)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn find_docking_pane(&self, pane: uuid::Uuid) -> Option<(window::Id, &pane::State)> {
+        self.popout.keys().find_map(|&source| {
+            let state = self.docking_pane(source)?;
+            (state.unique_id() == pane).then_some((source, state))
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn has_docking_pane(&self, pane: uuid::Uuid) -> bool {
+        self.find_docking_pane(pane).is_some()
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn close_exported_pane(
+        &mut self,
+        main: window::Id,
+        pane: uuid::Uuid,
+        snapshot: &data::Pane,
+    ) -> Option<Task<Message>> {
+        let Some((source, state)) = self.find_docking_pane(pane) else {
+            return Some(Task::none());
         };
+        let snapshot = serde_json::to_value(snapshot).ok()?;
+        if serde_json::to_value(data::Pane::from(state)).ok()? != snapshot {
+            return None;
+        }
         self.popout.remove(&source);
         if self.focus.is_some_and(|(window, _)| window == source) {
             self.focus = None;
         }
-        self.refresh_streams(main).chain(window::close(source))
+        Some(self.refresh_streams(main).chain(window::close(source)))
     }
 
     #[cfg(target_os = "windows")]

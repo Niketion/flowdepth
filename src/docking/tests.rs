@@ -226,6 +226,17 @@ fn invalid_bounds_and_scale_hide_the_guide() {
 }
 
 #[test]
+fn split_fit_is_rechecked_against_the_current_grid() {
+    let mut geometry = geometry(1.5);
+    assert!(geometry.can_split(Zone::Right));
+    geometry.screen.width = 445.0 * geometry.scale;
+    assert!(!geometry.can_split(Zone::Right));
+    assert!(geometry.can_split(Zone::Top));
+    geometry.minimum.1 = 360.0;
+    assert!(!geometry.can_split(Zone::Top));
+}
+
+#[test]
 fn quick_passage_near_an_edge_keeps_the_popup_detached() {
     let geometry = Some(geometry(1.0));
     let start = Instant::now();

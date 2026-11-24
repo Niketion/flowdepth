@@ -1,6 +1,7 @@
 //! Discovery and transfer between Windows processes in the desktop session.
 
 use std::{
+    collections::HashSet,
     io,
     os::windows::io::AsRawHandle,
     sync::{
@@ -31,23 +32,22 @@ use crate::docking::{Point, Rect, Zone};
 
 const MAX_OFFER: usize = 8 * 1024 * 1024;
 const TRANSFER_TIMEOUT: Duration = Duration::from_secs(4);
-const COOKIE: *const u16 = w!("Flowdepth.Dock.v1.Cookie");
-const PRECISE_ZOOM: *const u16 = w!("Flowdepth.Dock.v1.PreciseZoom");
+const COOKIE: *const u16 = w!("Flowdepth.Dock.v2.Cookie");
 const FIELDS: [*const u16; 9] = [
-    w!("Flowdepth.Dock.v1.Layout"),
-    w!("Flowdepth.Dock.v1.X"),
-    w!("Flowdepth.Dock.v1.Y"),
-    w!("Flowdepth.Dock.v1.Width"),
-    w!("Flowdepth.Dock.v1.Height"),
-    w!("Flowdepth.Dock.v1.MinimumWidth"),
-    w!("Flowdepth.Dock.v1.MinimumHeight"),
-    w!("Flowdepth.Dock.v1.Zoom"),
-    w!("Flowdepth.Dock.v1.Accent"),
+    w!("Flowdepth.Dock.v2.Layout"),
+    w!("Flowdepth.Dock.v2.X"),
+    w!("Flowdepth.Dock.v2.Y"),
+    w!("Flowdepth.Dock.v2.Width"),
+    w!("Flowdepth.Dock.v2.Height"),
+    w!("Flowdepth.Dock.v2.MinimumWidth"),
+    w!("Flowdepth.Dock.v2.MinimumHeight"),
+    w!("Flowdepth.Dock.v2.Zoom"),
+    w!("Flowdepth.Dock.v2.Accent"),
 ];
 
 static READY: AtomicBool = AtomicBool::new(false);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct Endpoint {
     pid: u32,
     cookie: u32,
@@ -64,13 +64,13 @@ impl Endpoint {
 
     fn pipe(self) -> String {
         format!(
-            r"\\.\pipe\Flowdepth.Dock.v1.{}.{:08x}",
+            r"\\.\pipe\Flowdepth.Dock.v2.{}.{:08x}",
             self.pid, self.cookie
         )
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Remote {
     endpoint: Endpoint,
     pub layout: u32,
@@ -110,12 +110,8 @@ fn zoom_encode(zoom: f64) -> u32 {
     (zoom as f32).to_bits()
 }
 
-fn zoom_decode(precise: u32, legacy: u32) -> f64 {
-    if precise == 0 {
-        fixed_decode(legacy)
-    } else {
-        f64::from(f32::from_bits(precise))
-    }
+fn zoom_decode(bits: u32) -> f64 {
+    f64::from(f32::from_bits(bits))
 }
 
 pub(super) fn publish(hwnd: HWND, advert: Advert) -> bool {
@@ -127,7 +123,7 @@ pub(super) fn publish(hwnd: HWND, advert: Advert) -> bool {
         fixed_encode(advert.bounds.height),
         fixed_encode(advert.minimum.0),
         fixed_encode(advert.minimum.1),
-        fixed_encode(advert.zoom),
+        zoom_encode(advert.zoom),
         advert.accent + 1,
     ];
     unsafe {
@@ -137,11 +133,6 @@ pub(super) fn publish(hwnd: HWND, advert: Advert) -> bool {
             .iter()
             .zip(values)
             .all(|(&key, value)| SetPropW(hwnd, key, value as usize as HANDLE) != 0)
-            && SetPropW(
-                hwnd,
-                PRECISE_ZOOM,
-                zoom_encode(advert.zoom) as usize as HANDLE,
-            ) != 0
             && SetPropW(hwnd, COOKIE, Endpoint::local().cookie as usize as HANDLE) != 0
     }
 }
@@ -149,7 +140,6 @@ pub(super) fn publish(hwnd: HWND, advert: Advert) -> bool {
 pub(super) fn unpublish(hwnd: HWND) {
     unsafe {
         RemovePropW(hwnd, COOKIE);
-        RemovePropW(hwnd, PRECISE_ZOOM);
         for field in FIELDS {
             RemovePropW(hwnd, field);
         }
@@ -162,7 +152,6 @@ pub(super) fn read(hwnd: HWND) -> Option<(Remote, Advert)> {
         return None;
     }
     let fields = FIELDS.map(|key| unsafe { GetPropW(hwnd, key) } as usize as u32);
-    let precise_zoom = unsafe { GetPropW(hwnd, PRECISE_ZOOM) } as usize as u32;
     let [
         layout,
         x,
@@ -197,7 +186,7 @@ pub(super) fn read(hwnd: HWND) -> Option<(Remote, Advert)> {
                 height: fixed_decode(height),
             },
             minimum: Point(fixed_decode(min_width), fixed_decode(min_height)),
-            zoom: zoom_decode(precise_zoom, zoom),
+            zoom: zoom_decode(zoom),
             accent: accent - 1,
         },
     ))
@@ -205,9 +194,43 @@ pub(super) fn read(hwnd: HWND) -> Option<(Remote, Advert)> {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Offer {
+    pub id: [u8; 16],
     pub layout: u32,
     pub zone: Zone,
     pub pane: data::Pane,
+}
+
+impl Offer {
+    pub fn new(remote: Remote, zone: Zone, pane: data::Pane) -> Self {
+        Self {
+            id: *uuid::Uuid::new_v4().as_bytes(),
+            layout: remote.layout,
+            zone,
+            pane,
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct Receipts(HashSet<[u8; 16]>);
+
+pub enum Receipt<T> {
+    AlreadyAccepted,
+    Imported(T),
+    Rejected,
+}
+
+impl Receipts {
+    pub fn import<T>(&mut self, id: [u8; 16], import: impl FnOnce() -> Option<T>) -> Receipt<T> {
+        if self.0.contains(&id) {
+            return Receipt::AlreadyAccepted;
+        }
+        let Some(value) = import() else {
+            return Receipt::Rejected;
+        };
+        self.0.insert(id);
+        Receipt::Imported(value)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -233,13 +256,15 @@ pub fn listen() -> Subscription<Incoming> {
             options
                 .first_pipe_instance(true)
                 .reject_remote_clients(true);
-            let mut server = match options.create(Endpoint::local().pipe()) {
+            let pipe = Endpoint::local().pipe();
+            let mut server = match options.create(&pipe) {
                 Ok(server) => server,
                 Err(error) => {
                     log::warn!("WINDOW DockPeerUnavailable | error={error}");
                     return;
                 }
             };
+            options.first_pipe_instance(false);
             struct Readiness;
             impl Drop for Readiness {
                 fn drop(&mut self) {
@@ -253,8 +278,18 @@ pub fn listen() -> Subscription<Incoming> {
                     log::warn!("WINDOW DockPeerUnavailable | error={error}");
                     break;
                 }
+                // Keep the endpoint reserved and give each connection a fresh
+                // Tokio pipe handle, including after a broken acknowledgement.
+                let next = match options.create(&pipe) {
+                    Ok(next) => next,
+                    Err(error) => {
+                        log::warn!("WINDOW DockPeerUnavailable | error={error}");
+                        break;
+                    }
+                };
+                let mut connected = std::mem::replace(&mut server, next);
                 let _ = timeout(TRANSFER_TIMEOUT, async {
-                    let offer = read_offer(&mut server).await?;
+                    let offer = read_offer(&mut connected).await?;
                     let (reply, accepted) = oneshot::channel();
                     output
                         .send(Incoming {
@@ -263,13 +298,9 @@ pub fn listen() -> Subscription<Incoming> {
                         })
                         .await
                         .map_err(io::Error::other)?;
-                    acknowledge(&mut server, accepted.await.unwrap_or(false)).await
+                    acknowledge(&mut connected, accepted.await.unwrap_or(false)).await
                 })
                 .await;
-                if let Err(error) = server.disconnect() {
-                    log::warn!("WINDOW DockPeerUnavailable | error={error}");
-                    break;
-                }
             }
         })
     })
@@ -277,8 +308,8 @@ pub fn listen() -> Subscription<Incoming> {
 
 async fn acknowledge(server: &mut NamedPipeServer, accepted: bool) -> io::Result<()> {
     server.write_u8(u8::from(accepted)).await?;
-    // DisconnectNamedPipe discards unread bytes. The receipt confirms that
-    // the client read the response before the pipe instance is reused.
+    // The receipt confirms that the client read the response before the
+    // server closes this connection.
     server.read_u8().await?;
     Ok(())
 }
@@ -307,13 +338,9 @@ fn decode(bytes: &[u8]) -> io::Result<Offer> {
     Ok(offer)
 }
 
-pub async fn send(remote: Remote, zone: Zone, pane: data::Pane) -> io::Result<bool> {
+pub async fn send(remote: Remote, offer: Arc<Offer>) -> io::Result<bool> {
     timeout(TRANSFER_TIMEOUT, async {
-        let bytes = serde_json::to_vec(&Offer {
-            layout: remote.layout,
-            zone,
-            pane,
-        })?;
+        let bytes = serde_json::to_vec(offer.as_ref())?;
         if bytes.len() > MAX_OFFER {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -346,18 +373,35 @@ mod tests {
     const CHILD_COOKIE: &str = "FLOWSURFACE_TEST_DOCK_PEER_COOKIE";
 
     #[test]
-    fn docking_advert_preserves_fractional_zoom_and_accepts_legacy_properties() {
+    fn docking_advert_preserves_fractional_zoom() {
         for zoom in [0.9_f32, 1.0, 1.1, 1.2] {
             let zoom = f64::from(zoom);
-            let legacy = fixed_encode(zoom);
-            assert_eq!(zoom_decode(zoom_encode(zoom), legacy), zoom);
-            assert_eq!(zoom_decode(0, legacy), fixed_decode(legacy));
+            assert_eq!(zoom_decode(zoom_encode(zoom)), zoom);
         }
         let zoom = f64::from(0.9_f32);
-        let legacy = fixed_encode(zoom);
+        let legacy = fixed_decode(fixed_encode(zoom));
         let dashboard_right = fixed_decode(fixed_encode(1920.0 / zoom - 8.0));
-        assert!(dashboard_right > 1920.0 / zoom_decode(0, legacy) + 1.0);
-        assert!(dashboard_right <= 1920.0 / zoom_decode(zoom_encode(zoom), legacy) + 1.0);
+        assert!(dashboard_right > 1920.0 / legacy + 1.0);
+        assert!(dashboard_right <= 1920.0 / zoom_decode(zoom_encode(zoom)) + 1.0);
+    }
+
+    #[test]
+    fn docking_retry_returns_committed_acceptance_without_importing_again() {
+        let mut receipts = Receipts::default();
+        let id = *uuid::Uuid::new_v4().as_bytes();
+
+        assert!(matches!(
+            receipts.import::<()>(id, || None),
+            Receipt::Rejected
+        ));
+        assert!(matches!(
+            receipts.import(id, || Some(())),
+            Receipt::Imported(())
+        ));
+        assert!(matches!(
+            receipts.import::<()>(id, || panic!("an accepted offer must not import again")),
+            Receipt::AlreadyAccepted
+        ));
     }
 
     #[test]
@@ -385,7 +429,26 @@ mod tests {
                     let offer = read_offer(&mut server).await.unwrap();
                     assert_eq!((offer.layout, offer.zone), (42, Zone::Right));
                     assert!(matches!(offer.pane, data::Pane::Starter { .. }));
-                    acknowledge(&mut server, true).await.unwrap();
+                    let mut receipts = Receipts::default();
+                    assert!(matches!(
+                        receipts.import(offer.id, || Some(())),
+                        Receipt::Imported(())
+                    ));
+                    // The receiver committed the import, but the acknowledgement was lost.
+                    let mut next = ServerOptions::new()
+                        .reject_remote_clients(true)
+                        .create(endpoint.pipe())
+                        .unwrap();
+                    drop(server);
+                    next.connect().await.unwrap();
+                    let retry = read_offer(&mut next).await.unwrap();
+                    assert_eq!(retry.id, offer.id);
+                    assert!(matches!(
+                        receipts
+                            .import::<()>(retry.id, || panic!("retry attempted a second import")),
+                        Receipt::AlreadyAccepted
+                    ));
+                    acknowledge(&mut next, true).await.unwrap();
                 })
                 .await
                 .unwrap();
@@ -393,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn docking_pipe_transfers_between_processes_and_returns_acknowledgement() {
+    fn docking_pipe_retries_across_processes_after_acknowledgement_loss() {
         use std::{
             io::{BufRead, BufReader},
             process::{Command, Stdio},
@@ -428,7 +491,11 @@ mod tests {
             .enable_all()
             .build()
             .unwrap()
-            .block_on(send(remote, Zone::Right, data::Pane::default()));
+            .block_on(async {
+                let offer = Arc::new(Offer::new(remote, Zone::Right, data::Pane::default()));
+                assert!(send(remote, Arc::clone(&offer)).await.is_err());
+                send(remote, offer).await
+            });
         assert!(child.wait().unwrap().success());
         assert!(result.unwrap());
     }
@@ -437,11 +504,13 @@ mod tests {
     fn docking_peer_roundtrips_only_a_single_pane() {
         let pane = data::Pane::default();
         let offer = Offer {
+            id: *uuid::Uuid::new_v4().as_bytes(),
             layout: 42,
             zone: Zone::Left,
             pane: pane.clone(),
         };
         let received = decode(&serde_json::to_vec(&offer).unwrap()).unwrap();
+        assert_eq!(received.id, offer.id);
         assert_eq!(received.layout, 42);
         assert_eq!(received.zone, Zone::Left);
         let split = Offer {

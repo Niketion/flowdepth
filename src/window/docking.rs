@@ -8,7 +8,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::HashMap,
     ptr::null_mut,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use iced::{
@@ -71,6 +71,7 @@ thread_local! {
 }
 
 const SUBCLASS_ID: usize = 1;
+const WINDOW_REFRESH_INTERVAL: Duration = Duration::from_millis(125);
 
 pub fn register_main<M: Send + 'static>(id: window::Id) -> Task<M> {
     window::run(id, move |handle| {
@@ -110,10 +111,20 @@ unsafe extern "system" fn main_proc(
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }
 
-pub fn accepts_peer(layout: u32) -> bool {
-    SURFACE
+pub fn accepts_peer(layout: u32, zone: Zone, minimum: Point) -> bool {
+    let Some((id, hwnd)) = MAIN.get() else {
+        return false;
+    };
+    if !SURFACE
         .get()
-        .is_some_and(|surface| surface.layout == layout)
+        .is_some_and(|surface| surface.id == id && surface.layout == layout)
+    {
+        return false;
+    }
+    destination_geometry(hwnd).is_some_and(|(_, mut geometry, _)| {
+        geometry.minimum = minimum;
+        geometry.can_split(zone)
+    })
 }
 
 pub fn watch<M: Send + 'static>(
@@ -244,6 +255,7 @@ struct Gesture {
     button: u16,
     end: MoveEnd,
     targets: Vec<HWND>,
+    targets_updated: Option<Instant>,
     receiver: Option<Destination>,
     edge_timer: usize,
     overlay: Option<overlay::Overlay>,
@@ -315,7 +327,8 @@ impl Gesture {
             start_origin,
             button,
             end: MoveEnd::default(),
-            targets: receiving_windows(),
+            targets: Vec::new(),
+            targets_updated: None,
             receiver: None,
             edge_timer: 0,
             overlay: None,
@@ -328,8 +341,18 @@ impl Gesture {
         if self.end.cancelled || self.end.released.is_some() || self.overlay_failed {
             return;
         }
+        let now = Instant::now();
         let sample = cursor().and_then(|position| {
-            let (destination, geometry, accent) = target(&self.targets, self.popup, position)?;
+            let (destination, geometry, accent) = target(self.popup, position, || {
+                if self
+                    .targets_updated
+                    .is_none_or(|last| now.duration_since(last) >= WINDOW_REFRESH_INTERVAL)
+                {
+                    self.targets = receiving_windows();
+                    self.targets_updated = Some(now);
+                }
+                window_behind_popup(&self.targets, self.popup, position)
+            })?;
             Some((position, destination, geometry, accent))
         });
         let receiver = sample.map(|(_, destination, _, _)| destination);
@@ -337,7 +360,6 @@ impl Gesture {
             self.drag.reset_target();
             self.receiver = receiver;
         }
-        let now = Instant::now();
         let candidate = match sample {
             Some((position, destination, geometry, accent)) => self
                 .drag
@@ -430,7 +452,9 @@ impl Gesture {
         let (Some(release), Some((shown_receiver, displayed))) = (release, displayed) else {
             return;
         };
-        let Some((destination, geometry, _)) = target(&self.targets, self.popup, release) else {
+        let Some((destination, geometry, _)) = target(self.popup, release, || {
+            window_behind_popup(&receiving_windows(), self.popup, release)
+        }) else {
             return;
         };
         let Some(zone) = self.drag.release(point(release), Some(geometry)) else {
@@ -576,7 +600,27 @@ fn receiving_windows() -> Vec<HWND> {
     windows
 }
 
-fn target(windows: &[HWND], popup: HWND, pointer: POINT) -> Option<(Destination, Geometry, Color)> {
+fn window_behind_popup(windows: &[HWND], popup: HWND, pointer: POINT) -> Option<HWND> {
+    windows.iter().copied().find(|&hwnd| {
+        if hwnd == popup {
+            return false;
+        }
+        let mut rect = RECT::default();
+        unsafe {
+            IsWindowVisible(hwnd) != 0
+                && IsIconic(hwnd) == 0
+                && (GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TRANSPARENT == 0)
+                && GetWindowRect(hwnd, &mut rect) != 0
+                && PtInRect(&rect, pointer) != 0
+        }
+    })
+}
+
+fn target(
+    popup: HWND,
+    pointer: POINT,
+    window_behind_popup: impl FnOnce() -> Option<HWND>,
+) -> Option<(Destination, Geometry, Color)> {
     let under_pointer = unsafe {
         if IsWindowVisible(popup) == 0 || IsZoomed(popup) != 0 || IsIconic(popup) != 0 {
             return None;
@@ -588,19 +632,7 @@ fn target(windows: &[HWND], popup: HWND, pointer: POINT) -> Option<(Destination,
     let covered_by_popup =
         under_pointer == popup || unsafe { GetWindow(under_pointer, GW_OWNER) } == popup;
     let hwnd = if covered_by_popup {
-        windows.iter().copied().find(|&hwnd| {
-            if hwnd == popup {
-                return false;
-            }
-            let mut rect = RECT::default();
-            unsafe {
-                IsWindowVisible(hwnd) != 0
-                    && IsIconic(hwnd) == 0
-                    && (GetWindowLongW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TRANSPARENT == 0)
-                    && GetWindowRect(hwnd, &mut rect) != 0
-                    && PtInRect(&rect, pointer) != 0
-            }
-        })?
+        window_behind_popup()?
     } else {
         under_pointer
     };

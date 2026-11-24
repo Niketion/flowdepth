@@ -19,7 +19,7 @@ fn docking_peer_import_keeps_source_until_receipt_and_preserves_configuration() 
     let (pane_id, offer) = source.export_docking_pane(popup).unwrap();
     assert!(
         destination
-            .import_docking_pane(receiving_main, crate::docking::Zone::Right, offer)
+            .import_docking_pane(receiving_main, crate::docking::Zone::Right, offer.clone())
             .is_some()
     );
     assert!(source.popout.contains_key(&popup));
@@ -34,9 +34,32 @@ fn docking_peer_import_keeps_source_until_receipt_and_preserves_configuration() 
         Node::Split { axis: Axis::Vertical, b, .. } if matches!(**b, Node::Pane(pane) if pane == focused_pane)
     ));
 
-    let _close = source.close_exported_pane(main, pane_id);
+    let _close = source.close_exported_pane(main, pane_id, &offer).unwrap();
     assert!(!source.popout.contains_key(&popup));
     assert!(source.popout.contains_key(&unrelated));
+}
+
+#[cfg(target_os = "windows")]
+#[test]
+fn docking_receipt_keeps_a_popout_edited_after_export() {
+    let main = window::Id::unique();
+    let mut dashboard = Dashboard::empty(uuid::Uuid::new_v4());
+    let (popup, pane) = add_popout(&mut dashboard, pane::State::new());
+    let (id, snapshot) = dashboard.export_docking_pane(popup).unwrap();
+    dashboard
+        .popout
+        .get_mut(&popup)
+        .unwrap()
+        .0
+        .get_mut(pane)
+        .unwrap()
+        .link_group = Some(LinkGroup::B);
+
+    assert!(dashboard.close_exported_pane(main, id, &snapshot).is_none());
+    assert_eq!(
+        dashboard.get_pane(main, popup, pane).unwrap().link_group,
+        Some(LinkGroup::B)
+    );
 }
 
 fn add_popout(dashboard: &mut Dashboard, state: pane::State) -> (window::Id, pane_grid::Pane) {

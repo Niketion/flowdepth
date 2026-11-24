@@ -59,10 +59,8 @@ impl Geometry {
         if !width.is_finite() || !height.is_finite() {
             return None;
         }
-        let horizontal =
-            width >= self.minimum.0 + PANE_MIN + GRID_GAP && height >= self.minimum.1.max(PANE_MIN);
-        let vertical =
-            height >= self.minimum.1 + PANE_MIN + GRID_GAP && width >= self.minimum.0.max(PANE_MIN);
+        let horizontal = self.can_split(Zone::Left);
+        let vertical = self.can_split(Zone::Top);
         if !horizontal && !vertical {
             return None;
         }
@@ -86,6 +84,16 @@ impl Geometry {
             vertical,
             preview: None,
         })
+    }
+
+    pub fn can_split(self, zone: Zone) -> bool {
+        let width = self.screen.width / self.scale;
+        let height = self.screen.height / self.scale;
+        let (extent, cross_extent, minimum, cross_minimum) = match zone {
+            Zone::Left | Zone::Right => (width, height, self.minimum.0, self.minimum.1),
+            Zone::Top | Zone::Bottom => (height, width, self.minimum.1, self.minimum.0),
+        };
+        extent >= minimum + PANE_MIN + GRID_GAP && cross_extent >= cross_minimum.max(PANE_MIN)
     }
 
     fn placement(self, zone: Zone) -> Rect {

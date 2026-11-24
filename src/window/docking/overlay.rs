@@ -115,11 +115,7 @@ impl OverlayWindow {
                     rect.bottom - rect.top,
                     SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW,
                 ) != 0;
-            if visible {
-                InvalidateRect(self.0, null(), 0);
-                UpdateWindow(self.0);
-            }
-            visible
+            visible && InvalidateRect(self.0, null(), 0) != 0 && UpdateWindow(self.0) != 0
         }
     }
 

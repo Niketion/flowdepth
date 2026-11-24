@@ -157,7 +157,20 @@ struct Flowsurface {
     #[cfg(target_os = "windows")]
     closing_main_window: bool,
     #[cfg(target_os = "windows")]
-    pending_docks: HashMap<window::Id, (uuid::Uuid, uuid::Uuid)>,
+    pending_docks: HashMap<window::Id, PendingDock>,
+    #[cfg(target_os = "windows")]
+    retry_docks:
+        HashMap<(uuid::Uuid, window::docking::peer::Remote), Arc<window::docking::peer::Offer>>,
+    #[cfg(target_os = "windows")]
+    dock_receipts: window::docking::peer::Receipts,
+}
+
+#[cfg(target_os = "windows")]
+struct PendingDock {
+    layout: uuid::Uuid,
+    pane: uuid::Uuid,
+    remote: window::docking::peer::Remote,
+    offer: Arc<window::docking::peer::Offer>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -480,6 +493,10 @@ impl Flowsurface {
             closing_main_window: false,
             #[cfg(target_os = "windows")]
             pending_docks: HashMap::new(),
+            #[cfg(target_os = "windows")]
+            retry_docks: HashMap::new(),
+            #[cfg(target_os = "windows")]
+            dock_receipts: window::docking::peer::Receipts::default(),
         };
 
         if let Some(err) = audio_init_err {
@@ -992,6 +1009,12 @@ impl Flowsurface {
                         };
                         return Task::done(Message::ExitRequested(windows));
                     }
+                    #[cfg(target_os = "windows")]
+                    if window != main_window
+                        && let Some(pane) = self.active_dashboard().docking_pane_id(window)
+                    {
+                        self.retry_docks.retain(|(id, _), _| *id != pane);
+                    }
                     let dashboard = self.active_dashboard_mut();
 
                     if window != main_window {
@@ -1051,6 +1074,8 @@ impl Flowsurface {
                     }
                     Destination::Local(_) => {}
                     Destination::Peer(remote) => {
+                        use window::docking::peer::{Offer, send};
+
                         let Some(layout) =
                             self.layout_manager.active_layout_id().map(|id| id.unique)
                         else {
@@ -1061,76 +1086,119 @@ impl Flowsurface {
                         else {
                             return Task::none();
                         };
-                        self.pending_docks.insert(drop.popup, (layout, pane_id));
-                        return Task::perform(
-                            window::docking::peer::send(remote, drop.zone, pane),
-                            move |result| {
-                                Message::DockPeerResult(
-                                    drop.popup,
-                                    result.map_err(|error| error.to_string()),
-                                )
+                        if self
+                            .pending_docks
+                            .values()
+                            .any(|pending| pending.pane == pane_id)
+                        {
+                            return Task::none();
+                        }
+                        let offer = self
+                            .retry_docks
+                            .remove(&(pane_id, remote))
+                            .unwrap_or_else(|| Arc::new(Offer::new(remote, drop.zone, pane)));
+                        self.pending_docks.insert(
+                            drop.popup,
+                            PendingDock {
+                                layout,
+                                pane: pane_id,
+                                remote,
+                                offer: Arc::clone(&offer),
                             },
                         );
+                        return Task::perform(send(remote, offer), move |result| {
+                            Message::DockPeerResult(
+                                drop.popup,
+                                result.map_err(|error| error.to_string()),
+                            )
+                        });
                     }
                 }
             }
             #[cfg(target_os = "windows")]
             Message::DockPeerOffer(incoming) => {
+                use window::docking::peer::Receipt;
+
                 let Some(reply) = incoming.take_reply() else {
                     return Task::none();
                 };
                 let offer = Arc::unwrap_or_clone(incoming.offer);
-                let layout_matches = self
-                    .layout_manager
-                    .active_layout_id()
-                    .is_some_and(|id| window::docking::peer::stamp(id.unique) == offer.layout);
+                let active_layout = self.layout_manager.active_layout_id().map(|id| id.unique);
+                let can_import = self.dock_receiver_active();
                 let main = self.main_window.id;
-                let imported = if self.dock_receiver_active()
-                    && layout_matches
-                    && window::docking::accepts_peer(offer.layout)
-                {
-                    self.active_dashboard_mut()
+                let receipt = self.dock_receipts.import(offer.id, || {
+                    let layout = active_layout.filter(|id| {
+                        can_import && window::docking::peer::stamp(*id) == offer.layout
+                    })?;
+                    let dashboard = self.layout_manager.mut_dashboard(layout)?;
+                    let minimum = dashboard.docking_minimum()?;
+                    if !window::docking::accepts_peer(offer.layout, offer.zone, minimum) {
+                        return None;
+                    }
+                    dashboard
                         .import_docking_pane(main, offer.zone, offer.pane)
-                } else {
-                    None
-                };
-                if reply.send(imported.is_some()).is_err() && imported.is_some() {
+                        .map(|task| (layout, task))
+                });
+                let accepted = !matches!(receipt, Receipt::Rejected);
+                if reply.send(accepted).is_err() && accepted {
                     log::warn!("WINDOW DockPeerReceiptLost | side=destination");
                 }
-                if let Some(task) = imported {
+                if let Receipt::Imported((layout, task)) = receipt {
                     log::info!(
                         "WINDOW DockPeerAccepted | side=destination zone={:?}",
                         offer.zone
                     );
-                    return task.map(|event| Message::Dashboard {
-                        layout_id: None,
+                    return task.map(move |event| Message::Dashboard {
+                        layout_id: Some(layout),
                         event,
                     });
                 }
             }
             #[cfg(target_os = "windows")]
             Message::DockPeerResult(window, result) => {
-                let Some((layout, pane)) = self.pending_docks.remove(&window) else {
+                let Some(PendingDock {
+                    layout,
+                    pane,
+                    remote,
+                    offer,
+                }) = self.pending_docks.remove(&window)
+                else {
                     return Task::none();
                 };
                 if matches!(result, Ok(true)) {
                     let main = self.main_window.id;
                     if let Some(dashboard) = self.layout_manager.mut_dashboard(layout) {
                         log::info!("WINDOW DockPeerAccepted | side=source");
-                        return dashboard.close_exported_pane(main, pane).map(move |event| {
-                            Message::Dashboard {
+                        if let Some(task) = dashboard.close_exported_pane(main, pane, &offer.pane) {
+                            self.retry_docks.retain(|(id, _), _| *id != pane);
+                            return task.map(move |event| Message::Dashboard {
                                 layout_id: Some(layout),
                                 event,
-                            }
-                        });
+                            });
+                        }
+                        self.notifications.push(Toast::warn(
+                            "The pane was merged. The popout is still open because its configuration changed during the transfer.",
+                        ));
                     }
                 } else {
-                    if let Err(error) = result {
-                        log::warn!("WINDOW DockPeerRejected | error={error}");
+                    if !self
+                        .layout_manager
+                        .mut_dashboard(layout)
+                        .is_some_and(|dashboard| dashboard.has_docking_pane(pane))
+                    {
+                        return Task::none();
                     }
-                    self.notifications.push(Toast::warn(
-                        "The other window could not merge this pane. The popout is still open.",
-                    ));
+                    if let Err(error) = result {
+                        self.retry_docks.insert((pane, remote), offer);
+                        log::warn!("WINDOW DockPeerUnconfirmed | error={error}");
+                        self.notifications.push(Toast::warn(
+                            "Could not confirm the merge. The popout is still open. You can retry on the same window.",
+                        ));
+                    } else {
+                        self.notifications.push(Toast::warn(
+                            "The other window could not merge this pane. The popout is still open.",
+                        ));
+                    }
                 }
             }
             Message::ExitRequested(windows) => {
