@@ -3,11 +3,16 @@
 #[cfg(test)]
 mod tests;
 
+use std::time::{Duration, Instant};
+
 const MIN_MOVEMENT: f64 = 18.0;
-const EDGE_INSET: f64 = 36.0;
-const TARGET_DEPTH: f64 = 30.0;
-const TARGET_SPAN: f64 = 104.0;
-const EXIT_MARGIN: f64 = 8.0;
+const EDGE_DWELL: Duration = Duration::from_millis(180);
+const CORNER_TIE: f64 = 16.0;
+const GUIDE_PADDING: f64 = 10.0;
+const GUIDE_HEADER: f64 = 26.0;
+const TARGET_WIDTH: f64 = 104.0;
+const TARGET_HEIGHT: f64 = 40.0;
+const TARGET_GAP: f64 = 6.0;
 pub const GRID_GAP: f64 = 6.0;
 pub const PANE_MIN: f64 = 240.0;
 
@@ -45,28 +50,42 @@ impl Geometry {
         }
     }
 
-    fn local(self, point: Point) -> Option<(Rect, Point)> {
-        let screen = self.screen;
-        if !self.scale.is_finite() || self.scale <= 0.0 || !screen.contains(point) {
+    fn guide(self, pointer: Point) -> Option<Guide> {
+        if !self.scale.is_finite() || self.scale <= 0.0 || !self.screen.contains(pointer) {
             return None;
         }
-        let width = screen.width / self.scale;
-        let height = screen.height / self.scale;
+        let width = self.screen.width / self.scale;
+        let height = self.screen.height / self.scale;
         if !width.is_finite() || !height.is_finite() {
             return None;
         }
-        Some((
+        let horizontal =
+            width >= self.minimum.0 + PANE_MIN + GRID_GAP && height >= self.minimum.1.max(PANE_MIN);
+        let vertical =
+            height >= self.minimum.1 + PANE_MIN + GRID_GAP && width >= self.minimum.0.max(PANE_MIN);
+        if !horizontal && !vertical {
+            return None;
+        }
+        let guide_width = 2.0 * (GUIDE_PADDING + TARGET_WIDTH) + TARGET_GAP;
+        let rows = if horizontal && vertical { 2.0 } else { 1.0 };
+        let guide_height = GUIDE_HEADER + GUIDE_PADDING + rows * (TARGET_HEIGHT + TARGET_GAP);
+        let bounds = to_screen(
+            Point(self.screen.x, self.screen.y),
+            self.scale,
             Rect {
-                x: 0.0,
-                y: 0.0,
-                width,
-                height,
+                x: (width - guide_width) / 2.0,
+                y: (height - guide_height) / 2.0,
+                width: guide_width,
+                height: guide_height,
             },
-            Point(
-                (point.0 - screen.x) / self.scale,
-                (point.1 - screen.y) / self.scale,
-            ),
-        ))
+        );
+        Some(Guide {
+            bounds,
+            scale: self.scale,
+            horizontal,
+            vertical,
+            preview: None,
+        })
     }
 
     fn placement(self, zone: Zone) -> Rect {
@@ -93,6 +112,38 @@ impl Geometry {
         };
         area
     }
+
+    fn edge(self, pointer: Point, guide: Guide) -> Option<Zone> {
+        let x = (pointer.0 - self.screen.x) / self.scale;
+        let y = (pointer.1 - self.screen.y) / self.scale;
+        let width = self.screen.width / self.scale;
+        let height = self.screen.height / self.scale;
+        let (horizontal, vertical) = (guide.horizontal, guide.vertical);
+        let nearest_x = x.min(width - x);
+        let nearest_y = y.min(height - y);
+        let near_x = horizontal && nearest_x <= edge_depth(width);
+        let near_y = vertical && nearest_y <= edge_depth(height);
+        match (near_x, near_y) {
+            (false, false) => None,
+            (true, true) if (nearest_x - nearest_y).abs() < CORNER_TIE => None,
+            (true, false) => Some(horizontal_edge(x, width)),
+            (true, true) if nearest_x < nearest_y => Some(horizontal_edge(x, width)),
+            _ if y < height / 2.0 => Some(Zone::Top),
+            _ => Some(Zone::Bottom),
+        }
+    }
+}
+
+fn edge_depth(extent: f64) -> f64 {
+    (extent * 0.12).clamp(56.0, 112.0)
+}
+
+fn horizontal_edge(x: f64, width: f64) -> Zone {
+    if x < width / 2.0 {
+        Zone::Left
+    } else {
+        Zone::Right
+    }
 }
 
 fn to_screen(origin: Point, scale: f64, rect: Rect) -> Rect {
@@ -113,66 +164,68 @@ pub enum Zone {
     Bottom,
 }
 
-impl Zone {
-    const ALL: [Self; 4] = [Self::Left, Self::Right, Self::Top, Self::Bottom];
-
-    fn band(self, area: Rect, margin: f64) -> Rect {
-        let depth = TARGET_DEPTH + margin;
-        let span = TARGET_SPAN + margin;
-        match self {
-            Self::Left | Self::Right => Rect {
-                x: if self == Self::Left {
-                    EDGE_INSET
-                } else {
-                    area.width - EDGE_INSET
-                } - depth,
-                y: area.height / 2.0 - span,
-                width: 2.0 * depth,
-                height: 2.0 * span,
-            },
-            Self::Top | Self::Bottom => Rect {
-                x: area.width / 2.0 - span,
-                y: if self == Self::Top {
-                    EDGE_INSET
-                } else {
-                    area.height - EDGE_INSET
-                } - depth,
-                width: 2.0 * span,
-                height: 2.0 * depth,
-            },
-        }
-    }
-
-    fn contains(self, area: Rect, point: Point, minimum: Point, margin: f64) -> bool {
-        let (extent, cross_extent, min, cross_min) = match self {
-            Self::Left | Self::Right => (area.width, area.height, minimum.0, minimum.1),
-            Self::Top | Self::Bottom => (area.height, area.width, minimum.1, minimum.0),
-        };
-        let band = self.band(area, margin);
-        extent >= min + PANE_MIN + GRID_GAP
-            && cross_extent >= cross_min.max(PANE_MIN)
-            && point.0 >= band.x
-            && point.0 <= band.x + band.width
-            && point.1 >= band.y
-            && point.1 <= band.y + band.height
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Preview {
     pub zone: Zone,
     pub placement: Rect,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Guide {
+    pub bounds: Rect,
+    pub scale: f64,
+    horizontal: bool,
+    vertical: bool,
+    pub preview: Option<Preview>,
+}
+
+impl Guide {
+    pub fn targets(self) -> impl Iterator<Item = (Zone, Rect)> {
+        self.horizontal
+            .then_some([Zone::Left, Zone::Right])
+            .into_iter()
+            .chain(self.vertical.then_some([Zone::Top, Zone::Bottom]))
+            .enumerate()
+            .flat_map(move |(row, zones)| {
+                zones.into_iter().enumerate().map(move |(column, zone)| {
+                    let rect = to_screen(
+                        Point(self.bounds.x, self.bounds.y),
+                        self.scale,
+                        Rect {
+                            x: GUIDE_PADDING + column as f64 * (TARGET_WIDTH + TARGET_GAP),
+                            y: GUIDE_HEADER + row as f64 * (TARGET_HEIGHT + TARGET_GAP),
+                            width: TARGET_WIDTH,
+                            height: TARGET_HEIGHT,
+                        },
+                    );
+                    // Match the exact pixels used by the native overlay.
+                    let x = rect.x.round();
+                    let y = rect.y.round();
+                    (
+                        zone,
+                        Rect {
+                            x,
+                            y,
+                            width: (rect.x + rect.width).round() - x,
+                            height: (rect.y + rect.height).round() - y,
+                        },
+                    )
+                })
+            })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Candidate {
     zone: Zone,
     geometry: Geometry,
+    via_edge: bool,
 }
 
 pub struct Drag {
     start: Point,
     candidate: Option<Candidate>,
+    pending_edge: Option<(Candidate, Instant)>,
     moved: bool,
 }
 
@@ -181,46 +234,80 @@ impl Drag {
         Self {
             start,
             candidate: None,
+            pending_edge: None,
             moved: false,
         }
     }
 
-    pub fn update(&mut self, pointer: Point, geometry: Option<Geometry>) -> Option<Preview> {
-        let Some((geometry, area, local)) =
-            geometry.and_then(|g| g.local(pointer).map(|(area, point)| (g, area, point)))
-        else {
-            self.candidate = None;
-            return None;
-        };
+    pub fn update(
+        &mut self,
+        pointer: Point,
+        geometry: Option<Geometry>,
+        now: Instant,
+    ) -> Option<Guide> {
+        self.candidate = None;
+        let pending = self.pending_edge.take();
+        let (geometry, mut guide) =
+            geometry.and_then(|geometry| geometry.guide(pointer).map(|guide| (geometry, guide)))?;
         self.moved |= (pointer.0 - self.start.0).hypot(pointer.1 - self.start.1)
             >= MIN_MOVEMENT * geometry.scale;
         if !self.moved {
             return None;
         }
 
-        if self.candidate.as_ref().is_none_or(|candidate| {
-            candidate.geometry != geometry
-                || !candidate
-                    .zone
-                    .contains(area, local, geometry.minimum, EXIT_MARGIN)
-        }) {
-            self.candidate = Zone::ALL
-                .into_iter()
-                .find(|zone| zone.contains(area, local, geometry.minimum, 0.0))
-                .map(|zone| Candidate { zone, geometry });
+        if let Some(candidate) = Self::at(pointer, geometry, guide) {
+            if candidate.via_edge {
+                let since = pending
+                    .filter(|(previous, _)| *previous == candidate)
+                    .map_or(now, |(_, since)| since);
+                self.pending_edge = Some((candidate, since));
+                if now.duration_since(since) < EDGE_DWELL {
+                    return Some(guide);
+                }
+            }
+            self.candidate = Some(candidate);
+            guide.preview = Some(Preview {
+                zone: candidate.zone,
+                placement: geometry.placement(candidate.zone),
+            });
         }
+        Some(guide)
+    }
 
-        self.candidate.as_ref().map(|candidate| Preview {
-            zone: candidate.zone,
-            placement: geometry.placement(candidate.zone),
+    #[cfg(target_os = "windows")]
+    pub fn waiting_for_edge(&self) -> bool {
+        self.pending_edge.is_some() && self.candidate.is_none()
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn reset_target(&mut self) {
+        self.pending_edge = None;
+        self.candidate = None;
+    }
+
+    fn at(pointer: Point, geometry: Geometry, guide: Guide) -> Option<Candidate> {
+        if let Some((zone, _)) = guide.targets().find(|(_, rect)| rect.contains(pointer)) {
+            return Some(Candidate {
+                zone,
+                geometry,
+                via_edge: false,
+            });
+        }
+        if guide.bounds.contains(pointer) {
+            return None;
+        }
+        geometry.edge(pointer, guide).map(|zone| Candidate {
+            zone,
+            geometry,
+            via_edge: true,
         })
     }
 
     /// Confirm only the preview that was active before release.
-    pub fn release(mut self, pointer: Point, geometry: Option<Geometry>) -> Option<Zone> {
+    pub fn release(self, pointer: Point, geometry: Option<Geometry>) -> Option<Zone> {
         let candidate = self.candidate?;
-        let current = self.update(pointer, geometry)?;
-        (geometry == Some(candidate.geometry) && current.zone == candidate.zone)
-            .then_some(current.zone)
+        let geometry = geometry?;
+        let current = Self::at(pointer, geometry, geometry.guide(pointer)?)?;
+        (candidate == current).then_some(current.zone)
     }
 }
