@@ -5,6 +5,9 @@ use iced::{Point, Size, Subscription, Task, window};
 
 pub use iced::window::{Id, Position, Settings, close, open};
 
+#[cfg(target_os = "windows")]
+pub mod docking;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Window {
     pub id: Id,
@@ -204,6 +207,8 @@ fn platform_work_areas() -> Option<Vec<WorkArea>> {
 #[derive(Debug, Clone, Copy)]
 pub enum Event {
     CloseRequested(window::Id),
+    #[cfg(target_os = "windows")]
+    Opened(window::Id),
     Focused(window::Id),
     Unfocused(window::Id),
 }
@@ -218,6 +223,8 @@ fn filtered_events(
     window: window::Id,
 ) -> Option<Event> {
     match &event {
+        #[cfg(target_os = "windows")]
+        iced::Event::Window(iced::window::Event::Opened { .. }) => Some(Event::Opened(window)),
         iced::Event::Window(iced::window::Event::CloseRequested) => {
             Some(Event::CloseRequested(window))
         }

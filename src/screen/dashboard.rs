@@ -3,6 +3,9 @@ pub mod panel;
 pub mod sidebar;
 pub mod tickers_table;
 
+#[cfg(test)]
+mod redocking_tests;
+
 pub use sidebar::Sidebar;
 
 use super::DashboardError;
@@ -45,6 +48,7 @@ use std::{collections::HashMap, sync::Arc, time::Instant, vec};
 #[derive(Debug, Clone)]
 pub enum Message {
     Pane(window::Id, pane::Message),
+    News(uuid::Uuid, chart::news::Message),
     ChangePaneStatus(uuid::Uuid, pane::Status),
     FetchCompleted {
         pane_id: uuid::Uuid,
@@ -75,6 +79,12 @@ pub enum Message {
     },
     ResolveStreams(uuid::Uuid, Vec<PersistStreamKind>),
     RequestPalette,
+}
+
+enum PopoutPlacement {
+    Manual(pane_grid::Pane),
+    #[cfg(any(target_os = "windows", test))]
+    Edge(pane_grid::Edge),
 }
 
 /// Tracks WS disconnect state for deferred backfill computation.
@@ -674,6 +684,25 @@ impl Dashboard {
     ) -> (Task<Message>, Option<Event>) {
         let handles = &data_sources.exchange;
         match message {
+            Message::News(id, event) => {
+                // Subscriptions follow the pane UUID when its grid and window change.
+                let location = self
+                    .iter_all_panes(main_window.id)
+                    .find(|(_, _, state)| state.unique_id() == id)
+                    .map(|(window, pane, _)| (window, pane));
+                if let Some((window, pane)) = location {
+                    return self.update(
+                        Message::Pane(
+                            window,
+                            pane::Message::PaneEvent(pane, pane::Event::NewsInteraction(event)),
+                        ),
+                        main_window,
+                        layout_id,
+                        data_sources,
+                        windowing_mode,
+                    );
+                }
+            }
             Message::SavePopoutSpecs(specs) => {
                 for (window_id, new_spec) in specs {
                     if let Some((_, spec)) = self.popout.get_mut(&window_id) {
@@ -848,8 +877,11 @@ impl Dashboard {
                 pane::Message::Popout => {
                     return (self.popout_pane(main_window, windowing_mode), None);
                 }
-                pane::Message::Merge => {
-                    return (self.merge_pane(main_window), None);
+                pane::Message::Merge(pane) => {
+                    return (
+                        self.return_popout(main_window.id, window, PopoutPlacement::Manual(pane)),
+                        None,
+                    );
                 }
                 pane::Message::PaneEvent(pane, local) => {
                     if matches!(
@@ -1010,62 +1042,6 @@ impl Dashboard {
         (Task::none(), None)
     }
 
-    fn new_pane(
-        &mut self,
-        axis: pane_grid::Axis,
-        main_window: &Window,
-        pane_state: Option<pane::State>,
-    ) -> Task<Message> {
-        if self
-            .focus
-            .filter(|(window, _)| *window == main_window.id)
-            .is_some()
-        {
-            // If there is any focused pane on main window, split it
-            return self.split_pane(axis, main_window);
-        } else {
-            // If there is no focused pane, split the last pane or create a new empty grid
-            let pane = self.panes.iter().last().map(|(pane, _)| pane).copied();
-
-            if let Some(pane) = pane {
-                let result = self.panes.split(axis, pane, pane_state.unwrap_or_default());
-
-                if let Some((pane, _)) = result {
-                    return self.focus_pane(main_window.id, pane);
-                }
-            } else {
-                let (state, pane) = pane_grid::State::new(pane_state.unwrap_or_default());
-                self.panes = state;
-
-                return self.focus_pane(main_window.id, pane);
-            }
-        }
-
-        Task::none()
-    }
-
-    fn focus_pane(&mut self, window: window::Id, pane: pane_grid::Pane) -> Task<Message> {
-        if self.focus != Some((window, pane)) {
-            self.focus = Some((window, pane));
-        }
-
-        Task::none()
-    }
-
-    fn split_pane(&mut self, axis: pane_grid::Axis, main_window: &Window) -> Task<Message> {
-        if let Some((window, pane)) = self.focus
-            && window == main_window.id
-        {
-            let result = self.panes.split(axis, pane, pane::State::new());
-
-            if let Some((pane, _)) = result {
-                return self.focus_pane(main_window.id, pane);
-            }
-        }
-
-        Task::none()
-    }
-
     fn popout_pane(
         &mut self,
         main_window: &Window,
@@ -1107,19 +1083,201 @@ impl Dashboard {
         Task::none()
     }
 
-    fn merge_pane(&mut self, main_window: &Window) -> Task<Message> {
-        if let Some((window, pane)) = self.focus.take()
-            && let Some(pane_state) = self
-                .popout
-                .remove(&window)
-                .and_then(|(mut panes, _)| panes.panes.remove(&pane))
-        {
-            let task = self.new_pane(pane_grid::Axis::Horizontal, main_window, Some(pane_state));
+    #[cfg(target_os = "windows")]
+    pub fn dock_popout(
+        &mut self,
+        main: window::Id,
+        source: window::Id,
+        zone: crate::docking::Zone,
+    ) -> Task<Message> {
+        self.return_popout(main, source, PopoutPlacement::Edge(Self::dock_edge(zone)))
+    }
 
-            return Task::batch(vec![window::close(window), task]);
+    #[cfg(target_os = "windows")]
+    fn dock_edge(zone: crate::docking::Zone) -> pane_grid::Edge {
+        match zone {
+            crate::docking::Zone::Left => pane_grid::Edge::Left,
+            crate::docking::Zone::Right => pane_grid::Edge::Right,
+            crate::docking::Zone::Top => pane_grid::Edge::Top,
+            crate::docking::Zone::Bottom => pane_grid::Edge::Bottom,
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn export_docking_pane(&self, source: window::Id) -> Option<(uuid::Uuid, data::Pane)> {
+        let state = self.docking_pane(source)?;
+        Some((state.unique_id(), data::Pane::from(state)))
+    }
+
+    #[cfg(target_os = "windows")]
+    fn docking_pane(&self, source: window::Id) -> Option<&pane::State> {
+        let (popup, _) = self.popout.get(&source)?;
+        popup
+            .iter()
+            .next()
+            .filter(|_| popup.len() == 1)
+            .map(|(_, state)| state)
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn docking_pane_id(&self, source: window::Id) -> Option<uuid::Uuid> {
+        self.docking_pane(source).map(pane::State::unique_id)
+    }
+
+    #[cfg(target_os = "windows")]
+    fn find_docking_pane(&self, pane: uuid::Uuid) -> Option<(window::Id, &pane::State)> {
+        self.popout.keys().find_map(|&source| {
+            let state = self.docking_pane(source)?;
+            (state.unique_id() == pane).then_some((source, state))
+        })
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn has_docking_pane(&self, pane: uuid::Uuid) -> bool {
+        self.find_docking_pane(pane).is_some()
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn close_exported_pane(
+        &mut self,
+        main: window::Id,
+        pane: uuid::Uuid,
+        snapshot: &data::Pane,
+    ) -> Option<Task<Message>> {
+        let Some((source, state)) = self.find_docking_pane(pane) else {
+            return Some(Task::none());
+        };
+        let snapshot = serde_json::to_value(snapshot).ok()?;
+        if serde_json::to_value(data::Pane::from(state)).ok()? != snapshot {
+            return None;
+        }
+        self.popout.remove(&source);
+        if self.focus.is_some_and(|(window, _)| window == source) {
+            self.focus = None;
+        }
+        Some(self.refresh_streams(main).chain(window::close(source)))
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn import_docking_pane(
+        &mut self,
+        main: window::Id,
+        zone: crate::docking::Zone,
+        saved: data::Pane,
+    ) -> Option<Task<Message>> {
+        if self.panes.maximized().is_some() || matches!(saved, data::Pane::Split { .. }) {
+            return None;
+        }
+        let Configuration::Pane(state) = crate::layout::configuration(saved) else {
+            return None;
+        };
+        let destination = Self::reserve_docking_slot(&mut self.panes, Some(Self::dock_edge(zone)))?;
+        *self.panes.get_mut(destination)? = state;
+        self.focus = Some((main, destination));
+        self.reconcile_gex_liquidity_references(main);
+        Some(self.refresh_streams(main))
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn docking_minimum(&self) -> Option<crate::docking::Point> {
+        use crate::docking::{GRID_GAP, PANE_MIN, Point};
+
+        // Match PaneGrid's split-axis minimum calculation for the existing tree.
+        fn minimum(node: &pane_grid::Node) -> Point {
+            match node {
+                pane_grid::Node::Pane(_) => Point(PANE_MIN, PANE_MIN),
+                pane_grid::Node::Split { axis, a, b, .. } => {
+                    let Point(ax, ay) = minimum(a);
+                    let Point(bx, by) = minimum(b);
+                    match axis {
+                        pane_grid::Axis::Horizontal => Point(ax.max(bx), ay + by + GRID_GAP),
+                        pane_grid::Axis::Vertical => Point(ax + bx + GRID_GAP, ay.max(by)),
+                    }
+                }
+            }
         }
 
+        self.panes
+            .maximized()
+            .is_none()
+            .then(|| minimum(self.panes.layout()))
+    }
+
+    fn return_popout(
+        &mut self,
+        main: window::Id,
+        source: window::Id,
+        placement: PopoutPlacement,
+    ) -> Task<Message> {
+        if self.transfer_popout(main, source, placement).is_none() {
+            return Task::none();
+        }
+        if !self.popout.contains_key(&source) {
+            return window::close(source);
+        }
+        #[cfg(target_os = "windows")]
+        if self.popout[&source].0.len() == 1 {
+            return window::docking::enable_popup(source);
+        }
         Task::none()
+    }
+
+    fn transfer_popout(
+        &mut self,
+        main: window::Id,
+        source: window::Id,
+        placement: PopoutPlacement,
+    ) -> Option<pane_grid::Pane> {
+        if source == main {
+            return None;
+        }
+        let (popup, _) = self.popout.get_mut(&source)?;
+        let (source_pane, edge) = match placement {
+            PopoutPlacement::Manual(pane) => (pane, None),
+            #[cfg(any(target_os = "windows", test))]
+            PopoutPlacement::Edge(edge) => {
+                if popup.len() != 1 || self.panes.maximized().is_some() {
+                    return None;
+                }
+                (*popup.iter().next()?.0, Some(edge))
+            }
+        };
+        popup.get(source_pane)?;
+
+        // Reserve the destination before removing the original state. Moving a pane
+        // to a grid edge uses iced's own root split operation.
+        let destination = Self::reserve_docking_slot(&mut self.panes, edge)?;
+        let destination_state = self.panes.get_mut(destination)?;
+        if popup.len() == 1 {
+            *destination_state = popup
+                .panes
+                .remove(&source_pane)
+                .expect("validated popup pane");
+            self.popout.remove(&source);
+        } else if let Some((pane, _)) = popup.close(source_pane) {
+            *destination_state = pane;
+        } else {
+            self.panes.close(destination);
+            return None;
+        }
+        self.focus = Some((main, destination));
+        Some(destination)
+    }
+
+    fn reserve_docking_slot(
+        grid: &mut pane_grid::State<pane::State>,
+        edge: Option<pane_grid::Edge>,
+    ) -> Option<pane_grid::Pane> {
+        let target = grid.iter().last().map(|(&pane, _)| pane)?;
+        let axis = match edge {
+            Some(pane_grid::Edge::Left | pane_grid::Edge::Right) => pane_grid::Axis::Vertical,
+            _ => pane_grid::Axis::Horizontal,
+        };
+        let (destination, _) = grid.split(axis, target, pane::State::new())?;
+        if let Some(edge) = edge {
+            grid.move_to_edge(destination, edge);
+        }
+        Some(destination)
     }
 
     pub fn get_pane(
@@ -2612,44 +2770,12 @@ impl Dashboard {
         main_window: window::Id,
         proxy: Option<&exchange::proxy::Proxy>,
     ) -> Subscription<Message> {
-        let mut subscriptions = Vec::new();
-        for (pane_id, state) in self.panes.iter() {
-            let pane_id = *pane_id;
-            subscriptions.push(
-                state
-                    .news_subscription(main_window, pane_id, proxy.cloned())
-                    .with((main_window, pane_id))
-                    .map(|((main_window, pane_id), message)| {
-                        Message::Pane(
-                            main_window,
-                            pane::Message::PaneEvent(
-                                pane_id,
-                                pane::Event::NewsInteraction(message),
-                            ),
-                        )
-                    }),
-            );
-        }
-        for (window_id, (panes, _)) in &self.popout {
-            for (pane_id, state) in panes.iter() {
-                let (window_id, pane_id) = (*window_id, *pane_id);
-                subscriptions.push(
-                    state
-                        .news_subscription(window_id, pane_id, proxy.cloned())
-                        .with((window_id, pane_id))
-                        .map(|((window_id, pane_id), message)| {
-                            Message::Pane(
-                                window_id,
-                                pane::Message::PaneEvent(
-                                    pane_id,
-                                    pane::Event::NewsInteraction(message),
-                                ),
-                            )
-                        }),
-                );
-            }
-        }
-        Subscription::batch(subscriptions)
+        Subscription::batch(self.iter_all_panes(main_window).map(|(_, _, state)| {
+            state
+                .news_subscription(proxy.cloned())
+                .with(state.unique_id())
+                .map(|(id, event)| Message::News(id, event))
+        }))
     }
 
     pub fn market_subscriptions(

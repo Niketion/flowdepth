@@ -347,12 +347,10 @@ impl NewsTracker {
     pub fn subscription(
         &self,
         id: uuid::Uuid,
-        window: iced::window::Id,
-        pane: iced::widget::pane_grid::Pane,
         proxy: Option<exchange::proxy::Proxy>,
     ) -> Subscription<Message> {
-        let news = self.feed_subscription(id, window, pane, proxy.clone());
-        let feed_reactions = self.feed_reaction_subscription(id, window, pane, proxy.clone());
+        let news = self.feed_subscription(id, proxy.clone());
+        let feed_reactions = self.feed_reaction_subscription(id, proxy.clone());
         let reaction = self
             .selected
             .as_ref()
@@ -366,8 +364,6 @@ impl NewsTracker {
                 Subscription::run_with(
                     (
                         id,
-                        window,
-                        pane,
                         request,
                         self.reaction_nonce,
                         NewsNetwork(proxy),
@@ -375,7 +371,7 @@ impl NewsTracker {
                     ),
                     |context| {
                         let (request, nonce, network, force) =
-                            (context.3.clone(), context.4, context.5.clone(), context.6);
+                            (context.1.clone(), context.2, context.3.clone(), context.4);
                         iced::futures::stream::unfold(false, move |wait| {
                             let request = request.clone();
                             let network = network.clone();
@@ -428,61 +424,47 @@ impl NewsTracker {
     fn feed_reaction_subscription(
         &self,
         id: uuid::Uuid,
-        window: iced::window::Id,
-        pane: iced::widget::pane_grid::Pane,
         proxy: Option<exchange::proxy::Proxy>,
     ) -> Subscription<Message> {
         let requests = self.feed_requests();
         if self.paused || requests.is_empty() {
             return Subscription::none();
         }
-        Subscription::run_with(
-            (id, window, pane, requests, NewsNetwork(proxy)),
-            |context| {
-                let requests = context.3.clone();
-                let network = context.4.clone();
-                iced::futures::stream::unfold(0usize, move |mut index| {
-                    let requests = requests.clone();
-                    let network = network.clone();
-                    async move {
-                        if index == requests.len() {
-                            tokio::time::sleep(Duration::from_secs(60)).await;
-                            index = 0;
-                        }
-                        let request = requests[index].clone();
-                        // Keep automatic history requests bounded and paced across the feed.
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                        let result = reaction::fetch(&request, &network, false)
-                            .await
-                            .map(Box::new);
-                        Some((Message::FeedReactionResult(request, result), index + 1))
+        Subscription::run_with((id, requests, NewsNetwork(proxy)), |context| {
+            let requests = context.1.clone();
+            let network = context.2.clone();
+            iced::futures::stream::unfold(0usize, move |mut index| {
+                let requests = requests.clone();
+                let network = network.clone();
+                async move {
+                    if index == requests.len() {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        index = 0;
                     }
-                })
-            },
-        )
+                    let request = requests[index].clone();
+                    // Keep automatic history requests bounded and paced across the feed.
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                    let result = reaction::fetch(&request, &network, false)
+                        .await
+                        .map(Box::new);
+                    Some((Message::FeedReactionResult(request, result), index + 1))
+                }
+            })
+        })
     }
 
     fn feed_subscription(
         &self,
         id: uuid::Uuid,
-        window: iced::window::Id,
-        pane: iced::widget::pane_grid::Pane,
         proxy: Option<exchange::proxy::Proxy>,
     ) -> Subscription<Message> {
         if self.paused && !self.manual_refresh {
             return Subscription::none();
         }
         Subscription::run_with(
-            (
-                id,
-                window,
-                pane,
-                self.generation,
-                self.paused,
-                NewsNetwork(proxy),
-            ),
+            (id, self.generation, self.paused, NewsNetwork(proxy)),
             |context| {
-                let (generation, paused, network) = (context.3, context.4, context.5.clone());
+                let (generation, paused, network) = (context.1, context.2, context.3.clone());
                 iced::futures::stream::unfold((0u8, false), move |(phase, fetched)| {
                     let network = network.clone();
                     async move {

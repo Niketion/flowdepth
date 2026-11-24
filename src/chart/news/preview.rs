@@ -103,13 +103,7 @@ fn render_news_tracker_preview() {
     // Exercise the actual automatic subscription before opening any article.
     runtime.block_on(async {
         use iced::futures::StreamExt;
-        let (_, pane) = iced::widget::pane_grid::State::new(());
-        let subscription = tracker.feed_reaction_subscription(
-            uuid::Uuid::new_v4(),
-            iced::window::Id::unique(),
-            pane,
-            None,
-        );
+        let subscription = tracker.feed_reaction_subscription(uuid::Uuid::new_v4(), None);
         let recipe = iced::advanced::subscription::into_recipes(subscription)
             .pop()
             .unwrap();
